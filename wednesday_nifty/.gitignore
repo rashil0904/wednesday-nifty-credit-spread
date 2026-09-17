@@ -1,4 +1,5 @@
 .env
+.venv/
 .kite_session.json
 positions_wednesday_nifty.json
 weekly_state.json
