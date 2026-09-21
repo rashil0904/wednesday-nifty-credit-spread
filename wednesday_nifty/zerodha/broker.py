@@ -10,7 +10,7 @@ All broker/Kite-connection and external-data concerns in one place:
   - NSE trading-holiday lookup (not a Kite endpoint, but the same
     "resolve external facts before deciding what to do" concern).
 
-Run `python -m wednesday_nifty.broker` each trading morning to refresh the
+Run `python -m wednesday_nifty.zerodha.broker` each trading morning to refresh the
 day's session before the monitors run.
 """
 import json
@@ -23,8 +23,8 @@ from urllib.parse import parse_qs, urlparse
 import requests
 from kiteconnect import KiteConnect
 
-from . import config
-from .logger import get_logger
+from .. import config
+from ..logger import get_logger
 
 logger = get_logger("broker")
 
@@ -37,7 +37,7 @@ NIFTY_SPOT_EXCHANGE_SYMBOL = "NSE:NIFTY 50"
 #
 # Kite Connect has no silent refresh token: access_token must be
 # regenerated daily via the login flow and is invalidated overnight.
-# get_kite_client() only *reads* a cached token produced by login/main()
+# get_client() only *reads* a cached token produced by login/main()
 # below -- it never attempts to log in on its own. If the cached token is
 # missing or not from today (IST), callers get None and must log-and-skip
 # rather than guess.
@@ -65,14 +65,14 @@ def load_cached_token() -> Optional[str]:
     if data.get("date") != _today_ist_str():
         logger.warning(
             "Cached Kite session is from %s, not today (%s) — stale, refusing to use it. "
-            "Run `python -m wednesday_nifty.broker`.", data.get("date"), _today_ist_str(),
+            "Run `python -m wednesday_nifty.zerodha.broker`.", data.get("date"), _today_ist_str(),
         )
         return None
 
     return data.get("access_token")
 
 
-def get_kite_client() -> Optional[KiteConnect]:
+def get_client() -> Optional[KiteConnect]:
     """Returns a ready-to-use KiteConnect client, or None if no fresh
     session is available. Callers must handle None by logging and
     skipping — never by attempting to log in themselves."""
@@ -84,7 +84,7 @@ def get_kite_client() -> Optional[KiteConnect]:
     if token is None:
         logger.error(
             "No valid Kite access token for today. Run "
-            "`python -m wednesday_nifty.broker` before market open."
+            "`python -m wednesday_nifty.zerodha.broker` before market open."
         )
         return None
 
@@ -289,6 +289,19 @@ def resolve_option(kite, expiry: date, strike: int, option_type: str) -> OptionI
 def get_nifty_spot_ltp(kite) -> float:
     quote = kite.ltp([NIFTY_SPOT_EXCHANGE_SYMBOL])
     return quote[NIFTY_SPOT_EXCHANGE_SYMBOL]["last_price"]
+
+
+def get_futures_opening_price(kite, future: FuturesContract, trading_day: date) -> float:
+    """`trading_day` is unused here (Kite's quote always reflects the
+    current session) -- present only so the signature matches
+    jainam.broker's, which needs it to read a specific day's 09:15 candle."""
+    key = f"NFO:{future.tradingsymbol}"
+    return kite.quote([key])[key]["ohlc"]["open"]
+
+
+def get_latest_futures_price(kite, future: FuturesContract) -> float:
+    key = f"NFO:{future.tradingsymbol}"
+    return kite.ltp([key])[key]["last_price"]
 
 
 def fetch_futures_daily_candles(kite, future_instrument_token: int, trading_day: date) -> list:

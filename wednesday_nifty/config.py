@@ -17,9 +17,27 @@ load_dotenv(BASE_DIR / ".env")
 
 IST = ZoneInfo("Asia/Kolkata")
 
+# --- Broker selection -----------------------------------------------------
+# "kite" (Zerodha, default) or "jainam" (XTS). Picks which broker/execution
+# module pair monitor.py imports -- see monitor.py's module docstring.
+BROKER = os.environ.get("BROKER", "kite").strip().lower()
+if BROKER not in ("kite", "jainam"):
+    raise RuntimeError(f'BROKER must be "kite" or "jainam", got {BROKER!r}')
+
 # --- Kite Connect credentials -------------------------------------------------
 KITE_API_KEY = os.environ.get("KITE_API_KEY", "")
 KITE_API_SECRET = os.environ.get("KITE_API_SECRET", "")
+
+# --- Jainam (XTS) credentials -----------------------------------------------
+# Jainam white-labels Symphony Fintech's XTS Connect API -- see
+# jainam/client.py's module docstring for the CONFIRM-BEFORE-LIVE caveats
+# on this integration (unverified against a real Jainam session).
+JAINAM_BASE_URL = os.environ.get("JAINAM_BASE_URL", "")
+JAINAM_MARKET_API_KEY = os.environ.get("JAINAM_MARKET_API_KEY", "")
+JAINAM_MARKET_API_SECRET = os.environ.get("JAINAM_MARKET_API_SECRET", "")
+JAINAM_INTERACTIVE_API_KEY = os.environ.get("JAINAM_INTERACTIVE_API_KEY", "")
+JAINAM_INTERACTIVE_API_SECRET = os.environ.get("JAINAM_INTERACTIVE_API_SECRET", "")
+JAINAM_SOURCE = os.environ.get("JAINAM_SOURCE", "WEBAPI")
 
 # Optional opt-in auto-login (off unless the user explicitly sets these).
 AUTO_LOGIN_ENABLED = bool(os.environ.get("KITE_USER_ID")) and bool(
@@ -32,6 +50,16 @@ KITE_TOTP_SECRET = os.environ.get("KITE_TOTP_SECRET", "")
 # --- Safety switch -------------------------------------------------------------
 # Defaults to True on purpose: real orders require an explicit opt-out.
 DRY_RUN = os.environ.get("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
+
+# Jainam has no real order placement/cancel/status implementation yet (see
+# jainam/execution.py's module docstring) -- it's dry-run only until that's
+# built and verified against a live Jainam session. Refuse to start rather
+# than silently no-op on a real-money attempt.
+if BROKER == "jainam" and not DRY_RUN:
+    raise RuntimeError(
+        "BROKER=jainam does not support DRY_RUN=false yet -- no real XTS order "
+        "placement/cancel/status code exists. See jainam/execution.py."
+    )
 
 # --- Market timing (all in IST, always compared against zoneinfo-aware clocks) --
 MARKET_OPEN = time(9, 15)

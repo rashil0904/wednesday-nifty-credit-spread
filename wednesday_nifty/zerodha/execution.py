@@ -24,8 +24,8 @@ import time as time_module
 from datetime import date, timedelta
 from typing import Optional
 
-from . import config
-from .logger import get_logger
+from .. import config
+from ..logger import get_logger
 
 logger = get_logger("execution")
 

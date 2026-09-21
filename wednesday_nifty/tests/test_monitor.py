@@ -1,9 +1,31 @@
-from datetime import datetime
+import importlib
+from datetime import date, datetime
 
 import pytest
 
-from wednesday_nifty import broker, config, execution, monitor
+from wednesday_nifty import config, monitor
+from wednesday_nifty.zerodha import broker, execution
 from wednesday_nifty.tests.fake_kite import FakeKite
+
+
+# =============================================================================
+# Broker selection (config.BROKER picks the module pair at import time --
+# see monitor.py's module docstring)
+# =============================================================================
+
+def test_broker_env_var_selects_module_pair(monkeypatch):
+    from wednesday_nifty.jainam import broker as jainam_broker, execution as jainam_execution
+
+    monkeypatch.setattr(config, "BROKER", "jainam")
+    try:
+        importlib.reload(monitor)
+        assert monitor.broker is jainam_broker
+        assert monitor.execution is jainam_execution
+    finally:
+        monkeypatch.setattr(config, "BROKER", "kite")
+        importlib.reload(monitor)
+        assert monitor.broker is broker
+        assert monitor.execution is execution
 
 
 # =============================================================================
@@ -62,9 +84,9 @@ def test_exit_monitor_noops_outside_market_hours(monkeypatch):
     monkeypatch.setattr(monitor, "_within_market_hours", lambda now: False)
 
     def fail_if_called():
-        raise AssertionError("get_kite_client should not be called outside market hours")
+        raise AssertionError("get_client should not be called outside market hours")
 
-    monkeypatch.setattr(broker, "get_kite_client", fail_if_called)
+    monkeypatch.setattr(broker, "get_client", fail_if_called)
     assert monitor.run_exit_monitor() == 0
 
 
@@ -73,14 +95,14 @@ def test_exit_monitor_noops_when_no_open_position(monkeypatch):
     monkeypatch.setattr(execution, "get_open_position", lambda: None)
 
     def fail_if_called():
-        raise AssertionError("get_kite_client should not be called when there's no open position")
+        raise AssertionError("get_client should not be called when there's no open position")
 
-    monkeypatch.setattr(broker, "get_kite_client", fail_if_called)
+    monkeypatch.setattr(broker, "get_client", fail_if_called)
     assert monitor.run_exit_monitor() == 0
 
 
 # =============================================================================
-# Thin quote wrappers
+# Thin quote wrappers (now live on the broker module, not monitor)
 # =============================================================================
 
 def test_get_futures_opening_price_reads_ohlc_open():
@@ -88,7 +110,7 @@ def test_get_futures_opening_price_reads_ohlc_open():
     future = broker.FuturesContract(tradingsymbol="NIFTY25SEPFUT", instrument_token=1001,
                                      expiry=None)
     k.quotes["NFO:NIFTY25SEPFUT"] = {"last_price": 25100, "ohlc": {"open": 25050}}
-    assert monitor._get_futures_opening_price(k, future) == 25050
+    assert broker.get_futures_opening_price(k, future, date(2026, 9, 16)) == 25050
 
 
 def test_get_latest_futures_price_reads_ltp():
@@ -96,4 +118,4 @@ def test_get_latest_futures_price_reads_ltp():
     future = broker.FuturesContract(tradingsymbol="NIFTY25SEPFUT", instrument_token=1001,
                                      expiry=None)
     k.ltps["NFO:NIFTY25SEPFUT"] = 25123.45
-    assert monitor._get_latest_futures_price(k, future) == 25123.45
+    assert broker.get_latest_futures_price(k, future) == 25123.45

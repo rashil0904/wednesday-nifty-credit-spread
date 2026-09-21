@@ -3,7 +3,8 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from wednesday_nifty import broker, config
+from wednesday_nifty import config
+from wednesday_nifty.zerodha import broker
 from wednesday_nifty.tests.fake_kite import FakeKite
 
 
@@ -30,14 +31,14 @@ def test_stale_cached_token_from_a_previous_day_is_rejected():
     assert broker.load_cached_token() is None
 
 
-def test_get_kite_client_returns_none_without_api_key(monkeypatch):
+def test_get_client_returns_none_without_api_key(monkeypatch):
     monkeypatch.setattr(config, "KITE_API_KEY", "")
-    assert broker.get_kite_client() is None
+    assert broker.get_client() is None
 
 
-def test_get_kite_client_returns_none_without_valid_session(monkeypatch):
+def test_get_client_returns_none_without_valid_session(monkeypatch):
     monkeypatch.setattr(config, "KITE_API_KEY", "some-key")
-    assert broker.get_kite_client() is None  # no session cached
+    assert broker.get_client() is None  # no session cached
 
 
 # =============================================================================

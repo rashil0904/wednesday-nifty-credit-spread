@@ -2,7 +2,8 @@ from datetime import date
 
 import pytest
 
-from wednesday_nifty import config, execution
+from wednesday_nifty import config
+from wednesday_nifty.zerodha import execution
 from wednesday_nifty.tests.fake_kite import FakeKite
 
 SELL_SYM = "NIFTY25091825000CE"

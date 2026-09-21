@@ -12,10 +12,10 @@ by hand for now:
 Meant to be started manually on both Wednesday and Thursday mornings
 (~9:10am IST, before market open) -- this script itself decides, using
 strategy.resolve_trading_day_action, whether today is the day it should
-actually act on. See strategy.py / broker.py for the Wed->Thu holiday-shift
-rule and the two-day-holiday-stretch case (never auto-resolved past
-Thursday). It runs to completion (either a trade is entered, or the day is
-skipped/deferred) and then exits.
+actually act on. See strategy.py / zerodha/broker.py for the Wed->Thu
+holiday-shift rule and the two-day-holiday-stretch case (never
+auto-resolved past Thursday). It runs to completion (either a trade is
+entered, or the day is skipped/deferred) and then exits.
 
 --- Exit monitor ---
 A single-shot check: run it by hand, repeatedly, on any day a position may
@@ -23,13 +23,29 @@ be open (entry day through the following Tuesday). Each run no-ops
 immediately and cheaply if there's no open position or the market is
 closed. config.EXIT_MONITOR_POLL_SECONDS (5 minutes) documents the
 recommended re-run cadence until this is wired up to a real scheduler.
+
+--- Broker selection ---
+config.BROKER picks which broker/execution module pair is active
+("kite" -> zerodha.broker/zerodha.execution, "jainam" -> jainam.broker/
+jainam.execution). Both pairs expose the same function names/signatures
+(FuturesContract/OptionInstrument, resolve_*, enter_spread/exit_spread,
+etc.) so everything below this point is written against `broker`/
+`execution` generically and doesn't care which broker is active -- the
+one exception is real-time breakout detection, which has two concrete
+implementations (_run_ticker_loop for Kite's websocket, _run_poll_loop
+for Jainam's REST-only client) selected in run_entry_monitor.
 """
 import sys
 import time as time_module
 from datetime import date, datetime, timedelta
 
-from . import broker, config, execution, strategy
+from . import config, strategy
 from .logger import get_logger
+
+if config.BROKER == "jainam":
+    from .jainam import broker, execution
+else:
+    from .zerodha import broker, execution
 
 logger = get_logger("monitor")
 
@@ -116,14 +132,29 @@ def _run_ticker_loop(kite, future: broker.FuturesContract,
     return result
 
 
-def _get_futures_opening_price(kite, future: broker.FuturesContract) -> float:
-    key = f"NFO:{future.tradingsymbol}"
-    return kite.quote([key])[key]["ohlc"]["open"]
+def _run_poll_loop(client, future: broker.FuturesContract,
+                    levels_data: strategy.ThreeDayLevels) -> dict:
+    """Jainam/XTS equivalent of _run_ticker_loop: the ported client has no
+    streaming/websocket support (see jainam/client.py's module docstring),
+    so breakout detection here is a plain REST LTP poll every
+    config.REST_FALLBACK_POLL_SECONDS -- same loop-exit conditions and
+    return shape as the ticker loop, just without the websocket-push path."""
+    result = {"triggered": False, "direction": None, "futures_price": None}
 
+    while not result["triggered"]:
+        now_ist = datetime.now(config.IST)
+        if now_ist.time() >= config.FALLBACK_CHECK_TIME or now_ist.time() >= config.MARKET_CLOSE:
+            break
 
-def _get_latest_futures_price(kite, future: broker.FuturesContract) -> float:
-    key = f"NFO:{future.tradingsymbol}"
-    return kite.ltp([key])[key]["last_price"]
+        ltp = broker.get_latest_futures_price(client, future)
+        direction = strategy.detect_breakout(ltp, levels_data)
+        if direction:
+            result.update(triggered=True, direction=direction, futures_price=ltp)
+            break
+
+        time_module.sleep(config.REST_FALLBACK_POLL_SECONDS)
+
+    return result
 
 
 def _execute_entry(kite, direction: strategy.Direction, entry_reason: strategy.EntryReason,
@@ -158,9 +189,16 @@ def _execute_entry(kite, direction: strategy.Direction, entry_reason: strategy.E
         atm_strike, long_strike, option_type, expiry,
     )
 
-    fill_result = execution.enter_spread(
-        kite, sell_instrument.tradingsymbol, buy_instrument.tradingsymbol, quantity, config.DRY_RUN
-    )
+    if config.BROKER == "jainam":
+        # jainam.execution.enter_spread needs the resolved instrument
+        # objects (for .instrument_token) -- Kite can quote/order directly
+        # by tradingsymbol so zerodha.execution.enter_spread just takes
+        # the strings. See jainam/execution.py's module docstring.
+        fill_result = execution.enter_spread(kite, sell_instrument, buy_instrument, quantity, config.DRY_RUN)
+    else:
+        fill_result = execution.enter_spread(
+            kite, sell_instrument.tradingsymbol, buy_instrument.tradingsymbol, quantity, config.DRY_RUN
+        )
 
     week_key = execution.week_key_for(trading_day)
 
@@ -257,9 +295,13 @@ def run_entry_monitor() -> int:
 
     trading_day = today  # action == TRADE_TODAY
 
-    kite = broker.get_kite_client()
+    kite = broker.get_client()
     if kite is None:
-        logger.error("No valid Kite session — cannot trade today. Run `python -m wednesday_nifty.broker`.")
+        logger.error(
+            "No valid %s session — cannot trade today. Run "
+            "`python -m wednesday_nifty.zerodha.broker` (Kite) if config.BROKER is \"kite\".",
+            config.BROKER,
+        )
         return 1
 
     try:
@@ -296,10 +338,13 @@ def run_entry_monitor() -> int:
 
     _wait_until_market_open(datetime.now(config.IST))
 
-    opening_price = _get_futures_opening_price(kite, future)
+    opening_price = broker.get_futures_opening_price(kite, future, trading_day)
     logger.info("Trading day %s opening futures price: %.2f", trading_day, opening_price)
 
-    ticker_result = _run_ticker_loop(kite, future, levels_data)
+    if config.BROKER == "jainam":
+        ticker_result = _run_poll_loop(kite, future, levels_data)
+    else:
+        ticker_result = _run_ticker_loop(kite, future, levels_data)
 
     if ticker_result["triggered"]:
         _execute_entry(
@@ -309,7 +354,7 @@ def run_entry_monitor() -> int:
         return 0
 
     # No breakout by 2:35pm -- Entry Logic 3 fallback.
-    current_price = _get_latest_futures_price(kite, future)
+    current_price = broker.get_latest_futures_price(kite, future)
     direction = strategy.detect_fallback_direction(current_price, opening_price)
     logger.info("No breakout by %s — fallback check: open=%.2f current=%.2f -> %s",
                 config.FALLBACK_CHECK_TIME, opening_price, current_price, direction)
@@ -336,11 +381,11 @@ def run_exit_monitor() -> int:
     if position is None:
         return 0
 
-    kite = broker.get_kite_client()
+    kite = broker.get_client()
     if kite is None:
         logger.warning(
-            "Open position exists but no valid Kite session — skipping this check cycle, "
-            "will retry next interval. Run `python -m wednesday_nifty.broker`."
+            "Open position exists but no valid %s session — skipping this check cycle, "
+            "will retry next interval.", config.BROKER,
         )
         return 1
 
