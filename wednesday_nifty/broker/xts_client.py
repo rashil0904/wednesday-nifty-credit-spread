@@ -464,7 +464,10 @@ def _request(session: requests.Session, method: str, base_url: str, path: str, t
     response = session.request(
         method, base_url.rstrip("/") + path, headers=headers, params=params, json=json_body, timeout=10
     )
-    response.raise_for_status()
+    if not response.ok:
+        raise RuntimeError(
+            f"XTS API HTTP {response.status_code} on {method} {path}: {response.text[:500]}"
+        )
     data = response.json()
     if data.get("type") == "error":
         raise RuntimeError(f"XTS API error on {path}: {data.get('description')}")
