@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
+import notify
 import position_store as ps
 from broker.market_stream import MarketStream, get_ltp_with_fallback
 from broker.order_exec import execute_order
@@ -69,6 +70,7 @@ def main() -> int:
     if action is WeekAction.SKIP_HOLIDAY_STRETCH:
         ps.write_no_trade(today, "Both Wednesday and Thursday are NSE holidays")
         log("Both Wednesday and Thursday are holidays -- skipping this week entirely.")
+        notify.send(f"[NO_TRADE] {today}: both Wednesday and Thursday are NSE holidays -- week skipped.")
         return 0
 
     # action is TRADE_TODAY
@@ -77,6 +79,8 @@ def main() -> int:
             return _run_entry_day(now, today)
     except ps.LockHeldError:
         log("Entry lock already held (another run in progress or a stuck prior run) -- exiting.")
+        notify.send(f"[WARN] run_entry.py: entry lock already held on {today} -- "
+                     "another run in progress or a stuck prior run.")
         return 1
 
 
@@ -90,6 +94,8 @@ def _run_entry_day(now: datetime, today: date) -> int:
         ps.write_no_trade(today, f"Rollover proximity: future expires {future['expiry']}")
         log(f"Future expires {future['expiry']}, within {config.ROLLOVER_PROXIMITY_DAYS} day(s) -- "
             "skipping this week rather than guessing which contract to use.")
+        notify.send(f"[NO_TRADE] {today}: future expires {future['expiry']} within "
+                     f"{config.ROLLOVER_PROXIMITY_DAYS}d -- skipping this week (rollover proximity).")
         return 0
 
     to_date = today - timedelta(days=1)
@@ -101,6 +107,7 @@ def _run_entry_day(now: datetime, today: date) -> int:
     except ValueError as exc:
         ps.write_no_trade(today, str(exc))
         log(f"Could not compute 3-day levels: {exc}")
+        notify.send(f"[ERROR] {today}: could not compute 3-day levels: {exc}")
         return 1
     log(f"3D_HIGH={levels.high} 3D_LOW={levels.low} sessions={levels.sessions_used}")
 
@@ -128,6 +135,7 @@ def _run_entry_day(now: datetime, today: date) -> int:
         trigger = check_breakout(ltp, levels)
         if trigger:
             log(f"BREAKOUT: {trigger.value} at futures_ltp={ltp}")
+            notify.send(f"[SIGNAL] {today}: {trigger.value} at futures_ltp={ltp}")
             break
         time_module.sleep(config.POLL_INTERVAL_SECONDS)
 
@@ -137,10 +145,14 @@ def _run_entry_day(now: datetime, today: date) -> int:
         if trigger is None:
             ps.write_no_trade(today, f"14:35 fallback: price {price_1435} exactly equal to 09:15 open {opening_price}")
             log("14:35 fallback: price exactly equal to the open -- no trade.")
+            notify.send(f"[NO_TRADE] {today}: 14:35 price {price_1435} exactly equal to 09:15 "
+                         f"open {opening_price} -- no trade.")
             if stream:
                 stream.disconnect()
             return 0
         log(f"14:35 fallback: {trigger.value} (price={price_1435}, open={opening_price})")
+        notify.send(f"[SIGNAL] {today}: 14:35 fallback {trigger.value} "
+                     f"(price={price_1435}, open={opening_price})")
 
     exit_code = _enter_and_monitor(client, stream, today, future, levels, trigger)
     if stream:
@@ -181,6 +193,8 @@ def _enter_and_monitor(client, stream, today, future, levels, trigger) -> int:
         if net_hedge != 0 or net_short != 0:
             log(f"!! Pre-existing position on these instruments (hedge net={net_hedge}, short net={net_short}) "
                 "-- refusing to enter, review manually.")
+            notify.send(f"[ERROR] {today}: pre-existing non-zero net position on resolved instruments "
+                         f"(hedge net={net_hedge}, short net={net_short}) -- refusing to enter, review manually.")
             ps.write_no_trade(today, "Pre-existing non-zero net position on resolved instruments", mode="live")
             return 1
 
@@ -188,6 +202,8 @@ def _enter_and_monitor(client, stream, today, future, levels, trigger) -> int:
         buy = execute_order(client, hedge_instr["instrument_token"], "BUY", quantity, tag + "H", allow_market_fallback=False)
         if buy.filled == 0:
             log(f"!! Hedge BUY did not fill ({buy.rejected_reason or 'no fill'}) -- nothing traded.")
+            notify.send(f"[ERROR] {today}: hedge BUY did not fill "
+                         f"({buy.rejected_reason or 'no fill'}) -- nothing traded.")
             ps.write_no_trade(today, f"Hedge BUY did not fill: {buy.rejected_reason or 'no fill'}", mode="live")
             return 1
         hedge_fill_price = buy.avg_price
@@ -199,6 +215,8 @@ def _enter_and_monitor(client, stream, today, future, levels, trigger) -> int:
         if not legs_filled_ok:
             log(f"!! SHORT leg did not fully fill ({sell.filled}/{quantity}) -- "
                 "naked/partial long position. MANUAL REVIEW REQUIRED.")
+            notify.send(f"[CRITICAL] {today}: SHORT leg did not fully fill ({sell.filled}/{quantity}) "
+                         f"after hedge BUY already filled -- naked/partial position. MANUAL REVIEW REQUIRED.")
 
     entry_credit = (short_fill_price - hedge_fill_price) if short_fill_price is not None else 0.0
 
@@ -219,6 +237,15 @@ def _enter_and_monitor(client, stream, today, future, levels, trigger) -> int:
     log(f"ENTRY {'' if config.JAINAM_LIVE else '(DRY RUN) '}complete: trigger={trigger.value} "
         f"entry_credit={entry_credit:.2f}")
 
+    if legs_filled_ok:
+        mode = "LIVE" if config.JAINAM_LIVE else "DRY RUN"
+        notify.send(
+            f"[ENTRY] ({mode}) {trigger.value}: SELL {quantity} {short_instr['tradingsymbol']} "
+            f"@ {short_fill_price or 0:.2f} / BUY {quantity} {hedge_instr['tradingsymbol']} "
+            f"@ {hedge_fill_price or 0:.2f}\n"
+            f"Entry credit: {entry_credit:.2f} | Expiry {expiry} | Exit by {exit_date}"
+        )
+
     if not legs_filled_ok:
         return 1
 
@@ -237,6 +264,8 @@ def _enter_and_monitor(client, stream, today, future, levels, trigger) -> int:
         now_ist = datetime.now(config.IST)
         if now_ist.time() >= config.MARKET_CLOSE:
             log("Market closed -- ending today's monitoring. run_monitor_exit.py takes over on later days.")
+            notify.send(f"[INFO] {today}: market closed with position still OPEN -- "
+                         "run_monitor_exit.py takes over tomorrow.")
             return 0
         position = ps.read_position()
         if position is None or position.get("status") != "OPEN":
@@ -274,4 +303,9 @@ def _get_opening_price_with_retry(client, instrument_token: int, today: date, re
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:
+        import traceback
+        notify.send(f"[CRASH] run_entry.py crashed:\n{traceback.format_exc()[-3500:]}")
+        raise

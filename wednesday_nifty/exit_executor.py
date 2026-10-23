@@ -15,6 +15,7 @@ evaluated and wins first locks out the others for good.
 from datetime import datetime
 
 import config
+import notify
 import position_store as ps
 from broker.market_stream import get_ltp_with_fallback
 from broker.order_exec import execute_order
@@ -89,6 +90,15 @@ def _rollover_check_blocks_sl(client, position: dict, log) -> bool:
             f"Skipping the SL check this cycle -- NOT silently switching contracts. "
             f"Please confirm how the SL should map to the new contract."
         )
+        if not position.get("rollover_flag_notified"):
+            notify.send(
+                f"[FLAG] Futures rolled since entry while a HIGH_BREAKOUT stop loss "
+                f"(sl_level={position['sl_level']}) is still active -- SL check is being "
+                f"skipped, NOT silently remapped to the new contract. Needs your decision "
+                f"on how the SL should map to {current_future['tradingsymbol']}.",
+                log=log,
+            )
+            ps.update_position(rollover_flag_notified=True)
         return True
     return False
 
@@ -98,12 +108,13 @@ def _try_exit(client, reason: str, log) -> str | None:
         if not ps.begin_exit(reason):
             log(f"Exit '{reason}' lost the race -- another exit already won. Nothing to do.")
             return None
+        notify.send(f"[EXIT_SIGNAL] {reason} triggered -- closing position.", log=log)
         position = ps.read_position()
-        _close_position(client, position, log)
+        _close_position(client, position, reason, log)
     return reason
 
 
-def _close_position(client, position: dict, log) -> None:
+def _close_position(client, position: dict, reason: str, log) -> None:
     """BUY back the short leg first, then SELL the long hedge leg.
     Closing the short first removes the riskier leg; if it can't be
     closed, the hedge leg is left in place (still covering it) and this
@@ -112,6 +123,8 @@ def _close_position(client, position: dict, log) -> None:
     legs = {leg["role"]: leg for leg in position["legs"]}
     closed = set(position.get("closed_roles", []))
     tag_prefix = f"X{position['entry_date'].replace('-', '')}"
+    mode = "LIVE" if config.JAINAM_LIVE else "DRY RUN"
+    fill_notes = []
 
     for role, side in CLOSE_ORDER:
         leg = legs.get(role)
@@ -120,6 +133,7 @@ def _close_position(client, position: dict, log) -> None:
 
         if not config.JAINAM_LIVE:
             log(f"  [DRY_RUN] WOULD {side} {leg['quantity']} {leg['tradingsymbol']} to close {role}")
+            fill_notes.append(f"{role}: WOULD {side} {leg['quantity']} {leg['tradingsymbol']}")
             closed.add(role)
             ps.update_position(closed_roles=sorted(closed))
             continue
@@ -129,6 +143,11 @@ def _close_position(client, position: dict, log) -> None:
         if net * expected_sign < leg["quantity"]:
             log(f"!! {role}: account net {net:+d} doesn't match recorded {leg['quantity']} -- "
                 f"NOT trading this leg. Review manually.")
+            notify.send(
+                f"[CRITICAL] {reason} exit blocked: {role} account net {net:+d} doesn't match "
+                f"recorded {leg['quantity']} -- NOT trading this leg. Review manually.",
+                log=log,
+            )
             ps.update_position(status="OPEN")  # release the EXITING lock state for manual intervention
             return
 
@@ -137,11 +156,22 @@ def _close_position(client, position: dict, log) -> None:
         if not fill.complete:
             log(f"!! {role} closed only {fill.filled}/{leg['quantity']} "
                 f"({fill.rejected_reason or 'unfilled'}). Stopping -- remaining legs untouched.")
+            notify.send(
+                f"[CRITICAL] {reason} exit: {role} closed only {fill.filled}/{leg['quantity']} "
+                f"({fill.rejected_reason or 'unfilled'}). Remaining legs untouched -- MANUAL REVIEW.",
+                log=log,
+            )
             return
         closed.add(role)
         ps.update_position(closed_roles=sorted(closed))
+        fill_notes.append(f"{role}: {side} {fill.filled} @ {fill.avg_price}")
         log(f"  closed {role}: {fill.filled} @ avg {fill.avg_price}")
 
     if closed >= set(legs):
         ps.update_position(status="CLOSED", closed_date=datetime.now(config.IST).date().isoformat())
         log("Exit complete.")
+        notify.send(
+            f"[EXIT] ({mode}) {reason} complete.\n" + "\n".join(fill_notes) +
+            f"\nEntry credit was {position.get('entry_credit', 0):.2f}.",
+            log=log,
+        )

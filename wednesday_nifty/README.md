@@ -57,6 +57,13 @@ cp .env.example .env   # already done here -- real Jainam creds are in .env
 3. `JAINAM_LIVE=false` (the default) runs everything against real
    market data and logs exactly what it would trade, placing nothing.
    Flip to `true` only after reviewing every item below.
+4. Telegram notifications are already configured in `.env`
+   (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) -- every entry, exit,
+   order failure, skipped week, and crash sends a message to that chat.
+   Leave both blank to disable notifications entirely; see
+   `.env.example` for how to get new ones (BotFather + `getUpdates`).
+   Best-effort only -- see `notify.py` -- a Telegram outage never
+   blocks or crashes the trading flow.
 
 ## Running
 
@@ -141,7 +148,9 @@ re-invoked every few minutes.
   one fires" procedure used by both scripts.
 - `position_store.py` — JSON position state + the file locks guarding
   against double entry/exit.
+- `notify.py` — best-effort Telegram notifications for every entry,
+  exit, order failure, skipped week, and crash.
 - `scripts/run_entry.py`, `scripts/run_monitor_exit.py`,
-  `scripts/socket_smoke_test.py`.
+  `scripts/socket_smoke_test.py`, `scripts/quote_smoke_test.py`.
 - `tests/` — one file per module above, plus `test_entry_flow.py` and
   `test_exit_executor.py` for cross-module interaction cases.

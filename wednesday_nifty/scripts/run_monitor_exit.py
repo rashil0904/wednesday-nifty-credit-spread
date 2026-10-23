@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
+import notify
 import position_store as ps
 from broker.market_stream import MarketStream
 from broker.xts_client import NSE_FO_SEGMENT, XTSDataClient
@@ -63,6 +64,8 @@ def main() -> int:
             return _monitor_today(now, today, position)
     except ps.LockHeldError:
         log("Lock already held for today (another monitor run in progress) -- exiting.")
+        notify.send(f"[WARN] run_monitor_exit.py: monitor lock already held on {today} -- "
+                     "another run in progress or a stuck prior run.")
         return 1
 
 
@@ -122,4 +125,9 @@ def _wait_until(target_time) -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:
+        import traceback
+        notify.send(f"[CRASH] run_monitor_exit.py crashed:\n{traceback.format_exc()[-3500:]}")
+        raise

@@ -86,6 +86,14 @@ JAINAM_INTERACTIVE_API_SECRET = os.environ.get("JAINAM_INTERACTIVE_API_SECRET", 
 JAINAM_SOURCE = os.environ.get("JAINAM_SOURCE", "WEBAPI")
 JAINAM_CLIENT_ID = os.environ.get("JAINAM_CLIENT_ID", "")  # required for order placement, not for dry run
 
+# --- Telegram notifications -------------------------------------------------------
+# Every entry, exit, order failure, and skipped week sends a message here
+# -- best-effort only (see notify.py): a Telegram outage never blocks or
+# crashes the trading flow. Leave both unset to disable notifications
+# entirely. See .env.example for how to create a bot and get a chat id.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
 # --- Safety switch --------------------------------------------------------------
 # Defaults to False on purpose: real orders require an explicit opt-in.
 JAINAM_LIVE = os.environ.get("JAINAM_LIVE", "false").strip().lower() == "true"
