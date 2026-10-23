@@ -30,7 +30,7 @@ from broker.order_exec import execute_order
 from broker.xts_client import NSE_FO_SEGMENT, XTSDataClient
 from exit_executor import check_and_exit_if_triggered
 from strategy.breakout import check_breakout, fallback_trigger
-from strategy.calendar import WeekAction, following_tuesday, resolve_entry_day_action, resolve_exit_date
+from strategy.calendar import WeekAction, following_tuesday, pick_nearest_expiry, resolve_entry_day_action, resolve_exit_date
 from strategy.levels import compute_3day_levels
 from strategy.plan import hedge_direction_sign, option_type_for_trigger
 from strategy.strikes import calculate_atm_strike, calculate_hedge_strike
@@ -150,7 +150,7 @@ def _run_entry_day(now: datetime, today: date) -> int:
 
 def _enter_and_monitor(client, stream, today, future, levels, trigger) -> int:
     following_tue = following_tuesday(today, config.EXPIRY_WEEKDAY)
-    expiry = min(client.list_nifty_option_expiries(following_tue))
+    expiry = pick_nearest_expiry(client.list_nifty_option_expiries(today), following_tue)
     exit_date = resolve_exit_date(expiry, config.NSE_HOLIDAYS)
     log(f"Expiry: {expiry}  Exit date: {exit_date}")
 

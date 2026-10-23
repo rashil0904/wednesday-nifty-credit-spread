@@ -1,6 +1,12 @@
 from datetime import date
 
-from strategy.calendar import WeekAction, following_tuesday, resolve_entry_day_action, resolve_exit_date
+from strategy.calendar import (
+    WeekAction,
+    following_tuesday,
+    pick_nearest_expiry,
+    resolve_entry_day_action,
+    resolve_exit_date,
+)
 
 
 # =============================================================================
@@ -73,6 +79,37 @@ def test_following_tuesday_never_returns_entry_date_itself():
     # Entry day is never itself a Tuesday per the strategy, but if it were,
     # this must roll to next week, not return today.
     assert following_tuesday(date(2026, 9, 22), expiry_weekday=1) == date(2026, 9, 29)
+
+
+# =============================================================================
+# pick_nearest_expiry
+# =============================================================================
+
+def test_pick_nearest_expiry_matches_anchor_exactly_when_listed():
+    candidates = [date(2026, 9, 22), date(2026, 9, 29)]
+    assert pick_nearest_expiry(candidates, anchor=date(2026, 9, 22)) == date(2026, 9, 22)
+
+
+def test_pick_nearest_expiry_picks_earlier_shifted_expiry_not_next_week():
+    # Tuesday 2026-09-22 is a holiday -> NSE lists the real expiry on
+    # Monday 2026-09-21 instead. A plain >= filter would wrongly skip to
+    # next week's 2026-09-29; this must pick 2026-09-21.
+    candidates = [date(2026, 9, 21), date(2026, 9, 29)]
+    assert pick_nearest_expiry(candidates, anchor=date(2026, 9, 22)) == date(2026, 9, 21)
+
+
+def test_pick_nearest_expiry_picks_further_back_shift_over_next_week():
+    # Both Monday and Tuesday are holidays -> real expiry shifts to Friday
+    # 2026-09-18 (4 days before the anchor), which is still far closer
+    # than next week's 2026-09-29 (7 days after).
+    candidates = [date(2026, 9, 18), date(2026, 9, 29)]
+    assert pick_nearest_expiry(candidates, anchor=date(2026, 9, 22)) == date(2026, 9, 18)
+
+
+def test_pick_nearest_expiry_rejects_empty_candidates():
+    import pytest
+    with pytest.raises(ValueError):
+        pick_nearest_expiry([], anchor=date(2026, 9, 22))
 
 
 # =============================================================================

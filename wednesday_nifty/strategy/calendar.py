@@ -52,14 +52,27 @@ def following_tuesday(entry_date: date, expiry_weekday: int) -> date:
     [5, 6] days ahead for Wed, [4, 5] for Thu -- i.e. always next week,
     never today.
 
-    This is a calendar anchor only: the REAL listed weekly expiry (which
-    already reflects any NSE holiday shift) must be resolved live from
-    the instrument master (broker/xts_client.py), picking the nearest
-    expiry >= this date -- never trust this date alone as the expiry."""
+    This is a calendar anchor only: the REAL listed weekly expiry must be
+    resolved live from the instrument master (broker/xts_client.py) via
+    pick_nearest_expiry(), since NSE may have shifted it to the previous
+    trading day if this date itself is a holiday -- never trust this
+    date alone as the expiry."""
     days_ahead = (expiry_weekday - entry_date.weekday()) % 7
     if days_ahead == 0:
         days_ahead = 7
     return entry_date + timedelta(days=days_ahead)
+
+
+def pick_nearest_expiry(candidates: list[date], anchor: date) -> date:
+    """Pick whichever listed expiry is closest to the calendar anchor
+    (the computed following Tuesday). NSE shifts an expiry that would
+    land on a trading holiday to the PREVIOUS trading day, so the real
+    listed expiry can land a few days *before* the anchor, not only on
+    or after it -- a plain `>= anchor` filter would skip that shifted
+    expiry and wrongly pick the following week's instead."""
+    if not candidates:
+        raise ValueError("no expiry candidates to choose from")
+    return min(candidates, key=lambda e: abs((e - anchor).days))
 
 
 def resolve_exit_date(expiry: date, holidays: set[date]) -> date:
