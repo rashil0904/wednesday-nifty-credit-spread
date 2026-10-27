@@ -1,17 +1,18 @@
 """
 Entry-day script: Wednesday (or Thursday if Wednesday is an NSE
-holiday). Computes the 3-day levels, streams NIFTY futures from 09:15,
-enters on the first breakout or the 14:35 red/green fallback, then
-keeps monitoring for the rest of the trading day (profit target always;
-stop loss only for a HIGH_BREAKOUT entry -- see strategy/stop_loss.py).
+holiday). Computes the 3-day levels, polls NIFTY futures over REST from
+09:15, enters on the first breakout or the 14:35 red/green fallback,
+then keeps monitoring for the rest of the trading day (profit target
+always; stop loss only for a HIGH_BREAKOUT entry -- see
+strategy/stop_loss.py).
 
 Guarded against a double entry three ways: a per-day file lock
 (position_store.acquire_entry_lock), a position-file check (today
 already resolved), and -- once live -- a broker net-position check
 before placing any order.
 
-DRY RUN by default (JAINAM_LIVE=false in .env): streams real market
-data and logs exactly what it would do; places no orders.
+DRY RUN by default (JAINAM_LIVE=false in .env): polls real market data
+and logs exactly what it would do; places no orders.
 
     python scripts/run_entry.py
 """
@@ -26,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
 import notify
 import position_store as ps
-from broker.market_stream import MarketStream, get_ltp_with_fallback
 from broker.order_exec import execute_order
 from broker.xts_client import NSE_FO_SEGMENT, XTSDataClient
 from exit_executor import check_and_exit_if_triggered
@@ -115,23 +115,12 @@ def _run_entry_day(now: datetime, today: date) -> int:
     opening_price = _get_opening_price_with_retry(client, future["instrument_token"], today)
     log(f"09:15 futures open: {opening_price}")
 
-    stream = None
-    if config.USE_WEBSOCKET:
-        stream = MarketStream(client)
-        try:
-            stream.connect()
-            stream.subscribe([(NSE_FO_SEGMENT, future["instrument_token"])])
-            log("Market-data socket connected and subscribed.")
-        except Exception as exc:
-            log(f"Socket connect/subscribe failed ({exc!r}) -- using REST polling for today.")
-            stream = None
-
     trigger = None
     while True:
         now_ist = datetime.now(config.IST)
         if now_ist.time() >= config.FALLBACK_TRIGGER_TIME:
             break
-        ltp = get_ltp_with_fallback(stream, client, NSE_FO_SEGMENT, future["instrument_token"], log=log)
+        ltp = client.get_ltp(NSE_FO_SEGMENT, future["instrument_token"])
         trigger = check_breakout(ltp, levels)
         if trigger:
             log(f"BREAKOUT: {trigger.value} at futures_ltp={ltp}")
@@ -140,27 +129,22 @@ def _run_entry_day(now: datetime, today: date) -> int:
         time_module.sleep(config.POLL_INTERVAL_SECONDS)
 
     if trigger is None:
-        price_1435 = get_ltp_with_fallback(stream, client, NSE_FO_SEGMENT, future["instrument_token"], log=log)
+        price_1435 = client.get_ltp(NSE_FO_SEGMENT, future["instrument_token"])
         trigger = fallback_trigger(price_1435, opening_price)
         if trigger is None:
             ps.write_no_trade(today, f"14:35 fallback: price {price_1435} exactly equal to 09:15 open {opening_price}")
             log("14:35 fallback: price exactly equal to the open -- no trade.")
             notify.send(f"[NO_TRADE] {today}: 14:35 price {price_1435} exactly equal to 09:15 "
                          f"open {opening_price} -- no trade.")
-            if stream:
-                stream.disconnect()
             return 0
         log(f"14:35 fallback: {trigger.value} (price={price_1435}, open={opening_price})")
         notify.send(f"[SIGNAL] {today}: 14:35 fallback {trigger.value} "
                      f"(price={price_1435}, open={opening_price})")
 
-    exit_code = _enter_and_monitor(client, stream, today, future, levels, trigger)
-    if stream:
-        stream.disconnect()
-    return exit_code
+    return _enter_and_monitor(client, today, future, levels, trigger)
 
 
-def _enter_and_monitor(client, stream, today, future, levels, trigger) -> int:
+def _enter_and_monitor(client, today, future, levels, trigger) -> int:
     following_tue = following_tuesday(today, config.EXPIRY_WEEKDAY)
     expiry = pick_nearest_expiry(client.list_nifty_option_expiries(today), following_tue)
     exit_date = resolve_exit_date(expiry, config.NSE_HOLIDAYS)
@@ -249,15 +233,6 @@ def _enter_and_monitor(client, stream, today, future, levels, trigger) -> int:
     if not legs_filled_ok:
         return 1
 
-    if stream:
-        try:
-            stream.subscribe([
-                (NSE_FO_SEGMENT, short_instr["instrument_token"]),
-                (NSE_FO_SEGMENT, hedge_instr["instrument_token"]),
-            ])
-        except Exception as exc:
-            log(f"Could not subscribe option legs ({exc!r}) -- profit-target/SL checks will use REST.")
-
     log("Monitoring for the rest of the trading day (profit target"
         + (" + stop loss" if trigger.value == "HIGH_BREAKOUT" else "") + ")...")
     while True:
@@ -271,7 +246,7 @@ def _enter_and_monitor(client, stream, today, future, levels, trigger) -> int:
         if position is None or position.get("status") != "OPEN":
             log("Position no longer OPEN -- stopping monitoring.")
             return 0
-        exit_reason = check_and_exit_if_triggered(client, stream, position, log=log)
+        exit_reason = check_and_exit_if_triggered(client, position, log=log)
         if exit_reason:
             log(f"Exited same-day: {exit_reason}")
             return 0

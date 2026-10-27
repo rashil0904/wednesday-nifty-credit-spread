@@ -81,7 +81,7 @@ def test_no_exit_when_nothing_triggered():
     open_high_breakout_position()
     client = FakeClient()
     client.ltps = {FUTURES_TOKEN: 25450.0, SHORT_TOKEN: 150.0, HEDGE_TOKEN: 80.0}  # spread still worth full credit
-    reason = exit_executor.check_and_exit_if_triggered(client, None, ps.read_position())
+    reason = exit_executor.check_and_exit_if_triggered(client, ps.read_position())
     assert reason is None
     assert ps.read_position()["status"] == "OPEN"
 
@@ -94,7 +94,7 @@ def test_stop_loss_triggers_exit_in_dry_run():
     open_high_breakout_position()
     client = FakeClient()
     client.ltps = {FUTURES_TOKEN: 25399.0, SHORT_TOKEN: 150.0, HEDGE_TOKEN: 80.0}  # below sl_level=25400
-    reason = exit_executor.check_and_exit_if_triggered(client, None, ps.read_position())
+    reason = exit_executor.check_and_exit_if_triggered(client, ps.read_position())
     assert reason == "STOP_LOSS"
     data = ps.read_position()
     assert data["status"] == "CLOSED"
@@ -106,7 +106,7 @@ def test_no_sl_check_before_both_legs_filled():
     client = FakeClient()
     # Futures deep below sl_level -- would fire if legs_filled were True.
     client.ltps = {FUTURES_TOKEN: 20000.0, SHORT_TOKEN: 150.0, HEDGE_TOKEN: 80.0}
-    reason = exit_executor.check_and_exit_if_triggered(client, None, ps.read_position())
+    reason = exit_executor.check_and_exit_if_triggered(client, ps.read_position())
     assert reason is None
     assert ps.read_position()["status"] == "OPEN"
 
@@ -117,7 +117,7 @@ def test_low_breakout_position_never_stops_out_even_at_extreme_price():
     ps.update_position(legs_filled=True)
     client = FakeClient()
     client.ltps = {FUTURES_TOKEN: 1.0, SHORT_TOKEN: 150.0, HEDGE_TOKEN: 80.0}  # sl_level is None for LOW_BREAKOUT
-    reason = exit_executor.check_and_exit_if_triggered(client, None, ps.read_position())
+    reason = exit_executor.check_and_exit_if_triggered(client, ps.read_position())
     assert reason is None
 
 
@@ -125,7 +125,7 @@ def test_gap_down_open_below_sl_on_a_later_day_fires_on_first_tick():
     open_high_breakout_position()
     client = FakeClient()
     client.ltps = {FUTURES_TOKEN: 25000.0, SHORT_TOKEN: 150.0, HEDGE_TOKEN: 80.0}  # gap-down open
-    reason = exit_executor.check_and_exit_if_triggered(client, None, ps.read_position())
+    reason = exit_executor.check_and_exit_if_triggered(client, ps.read_position())
     assert reason == "STOP_LOSS"
 
 
@@ -138,7 +138,7 @@ def test_profit_target_triggers_exit_when_sl_not_breached():
     client = FakeClient()
     # Futures still above sl_level (no SL), spread down to 10% of entry credit (90% captured).
     client.ltps = {FUTURES_TOKEN: 25450.0, SHORT_TOKEN: 10.0, HEDGE_TOKEN: 3.0}  # value=7.0, 90% of 70
-    reason = exit_executor.check_and_exit_if_triggered(client, None, ps.read_position())
+    reason = exit_executor.check_and_exit_if_triggered(client, ps.read_position())
     assert reason == "PROFIT_TARGET"
     assert ps.read_position()["exit_reason"] == "PROFIT_TARGET"
 
@@ -152,7 +152,7 @@ def test_sl_and_profit_target_both_true_on_same_check_exactly_one_exit():
     client = FakeClient()
     # Futures below sl_level AND spread value already at the profit target.
     client.ltps = {FUTURES_TOKEN: 25000.0, SHORT_TOKEN: 10.0, HEDGE_TOKEN: 3.0}
-    reason = exit_executor.check_and_exit_if_triggered(client, None, ps.read_position())
+    reason = exit_executor.check_and_exit_if_triggered(client, ps.read_position())
     assert reason == "STOP_LOSS"  # checked first
     data = ps.read_position()
     assert data["status"] == "CLOSED"
@@ -168,7 +168,7 @@ def test_time_exit_fires_when_due(monkeypatch):
     open_high_breakout_position(exit_date=past_exit_date)
     client = FakeClient()
     client.ltps = {FUTURES_TOKEN: 25450.0, SHORT_TOKEN: 150.0, HEDGE_TOKEN: 80.0}  # neither SL nor PT
-    reason = exit_executor.check_and_exit_if_triggered(client, None, ps.read_position())
+    reason = exit_executor.check_and_exit_if_triggered(client, ps.read_position())
     assert reason == "TIME_EXIT"
 
 
@@ -182,7 +182,7 @@ def test_rollover_flag_blocks_sl_check_but_allows_profit_target():
     client.future = {"tradingsymbol": "NIFTY26OCTFUT", "instrument_token": 9999, "expiry": date(2026, 10, 27)}
     # Futures would breach SL if checked, but the contract has rolled -- must NOT fire STOP_LOSS.
     client.ltps = {FUTURES_TOKEN: 20000.0, SHORT_TOKEN: 10.0, HEDGE_TOKEN: 3.0}
-    reason = exit_executor.check_and_exit_if_triggered(client, None, ps.read_position())
+    reason = exit_executor.check_and_exit_if_triggered(client, ps.read_position())
     # Profit target condition is also met here and isn't blocked by the roll flag.
     assert reason == "PROFIT_TARGET"
 
@@ -192,5 +192,5 @@ def test_already_closed_position_short_circuits():
     ps.update_position(status="CLOSED")
     client = FakeClient()
     client.ltps = {FUTURES_TOKEN: 0.0, SHORT_TOKEN: 0.0, HEDGE_TOKEN: 0.0}
-    reason = exit_executor.check_and_exit_if_triggered(client, None, ps.read_position())
+    reason = exit_executor.check_and_exit_if_triggered(client, ps.read_position())
     assert reason is None

@@ -1,8 +1,8 @@
 # Wednesday 3-Day Breakout Credit Spread
 
 Live NIFTY weekly options strategy, trading through Jainam Broking
-(Symphony XTS API). WebSocket market data with REST fallback. Dry run
-by default.
+(Symphony XTS API). REST-polled market data (the WebSocket feed was
+removed -- see "Open items" below). Dry run by default.
 
 ## Strategy summary
 
@@ -45,12 +45,10 @@ cp .env.example .env   # already done here -- real Jainam creds are in .env
 .venv/bin/python -m pytest -v
 ```
 
-1. **Run the socket smoke test first**, before trusting the WebSocket
-   path for anything else:
+1. **Run the quote smoke test first**, to confirm REST market-data
+   calls actually work against your account:
    ```
-   .venv/bin/python scripts/socket_smoke_test.py
-   # if it fails, try the other candidate path:
-   .venv/bin/python scripts/socket_smoke_test.py --path /apimarketdata/socket.io
+   .venv/bin/python scripts/quote_smoke_test.py
    ```
 2. `JAINAM_CLIENT_ID` is already set in `.env` (not required for dry
    run; unconfirmed against a real order/position call yet).
@@ -73,8 +71,8 @@ cp .env.example .env   # already done here -- real Jainam creds are in .env
 ```
 
 Both are meant to be started once each relevant morning and left
-running through market close (they stream/poll internally), not
-re-invoked every few minutes.
+running through market close (they poll internally), not re-invoked
+every few minutes.
 
 ### Cron (IST)
 
@@ -91,15 +89,13 @@ re-invoked every few minutes.
 
 ## Open items — depends on the live API, not guessed
 
-1. **WebSocket host/path/event names** — no code anywhere (including
-   the reference repo, which is REST-only) has ever connected to
-   Jainam's XTS socket feed. `config.JAINAM_SOCKET_PATH` defaults to
-   `/apibinarymarketdata/socket.io` (best guess, by analogy with every
-   verified REST market-data call needing that prefix) but
-   `scripts/socket_smoke_test.py --path /apimarketdata/socket.io` can
-   try the documented alternative. Event names (`1512-json-full`) and
-   the subscribe-request shape are unverified until a real tick
-   arrives.
+1. **WebSocket market data** — removed (2026-10-27). It never worked
+   reliably against this account; both scripts now poll
+   `client.get_ltp()` over REST every `config.POLL_INTERVAL_SECONDS`
+   instead. To bring it back, see git history for
+   `broker/market_stream.py` and `scripts/socket_smoke_test.py` (removed
+   in the same commit) -- the host/path/event-name questions that were
+   open before removal are still unresolved.
 2. **Candle timestamp convention** — carried forward as verified from
    the reference repo (IST wall-clock encoded as a pseudo-epoch,
    `:59`-stamped) against this same Jainam account. Worth a spot-check
@@ -142,8 +138,8 @@ re-invoked every few minutes.
   (entry-day holiday shift, expiry/exit-date calc), `plan.py` (leg
   assembly), `exit_rules.py` (profit target, time exit),
   `stop_loss.py` (HIGH_BREAKOUT-only SL).
-- `broker/` — `xts_client.py` (REST), `order_exec.py` (fill tracking),
-  `market_stream.py` (Socket.IO + REST fallback behind one interface).
+- `broker/` — `xts_client.py` (REST quotes, candles, instruments,
+  orders), `order_exec.py` (fill tracking).
 - `exit_executor.py` — the shared "check every exit condition, close if
   one fires" procedure used by both scripts.
 - `position_store.py` — JSON position state + the file locks guarding
@@ -151,6 +147,6 @@ re-invoked every few minutes.
 - `notify.py` — best-effort Telegram notifications for every entry,
   exit, order failure, skipped week, and crash.
 - `scripts/run_entry.py`, `scripts/run_monitor_exit.py`,
-  `scripts/socket_smoke_test.py`, `scripts/quote_smoke_test.py`.
+  `scripts/quote_smoke_test.py`.
 - `tests/` — one file per module above, plus `test_entry_flow.py` and
   `test_exit_executor.py` for cross-module interaction cases.

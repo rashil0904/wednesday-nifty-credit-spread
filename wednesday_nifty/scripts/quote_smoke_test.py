@@ -4,9 +4,9 @@ prints the result (or the full error body, now that xts_client.py's
 _request() surfaces response.text instead of swallowing it behind
 raise_for_status()).
 
-Read-only: this exercises the same REST quotes call market_stream.py's
-get_ltp_with_fallback() falls back to, and nothing else -- no orders are
-possible from this script.
+Read-only: this exercises the same REST quotes call the live scripts
+poll on every tick, and nothing else -- no orders are possible from
+this script.
 
     python scripts/quote_smoke_test.py
 """

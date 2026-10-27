@@ -1,17 +1,17 @@
 """
 Exit-monitor script for every trading day AFTER the entry day, while a
-position is open. Streams NIFTY futures (for the HIGH_BREAKOUT stop
-loss) and both legs (for the profit target), and applies the Tuesday
-(or holiday-shifted) time exit off the clock.
+position is open. Polls NIFTY futures over REST (for the HIGH_BREAKOUT
+stop loss) and both legs (for the profit target), and applies the
+Tuesday (or holiday-shifted) time exit off the clock.
 
 Meant to be started once each such morning (e.g. via cron at ~09:10
-IST) and left running through market close -- it streams/polls
-continuously rather than being re-invoked every few minutes, matching
-run_entry.py's own structure. The entry day itself is handled by
-run_entry.py's own post-entry monitoring, not this script.
+IST) and left running through market close -- it polls continuously
+rather than being re-invoked every few minutes, matching run_entry.py's
+own structure. The entry day itself is handled by run_entry.py's own
+post-entry monitoring, not this script.
 
-DRY RUN by default (JAINAM_LIVE=false in .env): streams real market
-data and logs exactly what it would do; places no orders.
+DRY RUN by default (JAINAM_LIVE=false in .env): polls real market data
+and logs exactly what it would do; places no orders.
 
     python scripts/run_monitor_exit.py
 """
@@ -26,8 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
 import notify
 import position_store as ps
-from broker.market_stream import MarketStream
-from broker.xts_client import NSE_FO_SEGMENT, XTSDataClient
+from broker.xts_client import XTSDataClient
 from exit_executor import check_and_exit_if_triggered
 
 
@@ -71,25 +70,6 @@ def main() -> int:
 
 def _monitor_today(now: datetime, today: date, position: dict) -> int:
     client = XTSDataClient.from_env()
-    legs = {leg["role"]: leg for leg in position["legs"]}
-    futures_token = position.get("futures_instrument_token")
-
-    stream = None
-    if config.USE_WEBSOCKET:
-        stream = MarketStream(client)
-        instruments = [
-            (NSE_FO_SEGMENT, legs["SHORT_ATM"]["instrument_token"]),
-            (NSE_FO_SEGMENT, legs["LONG_HEDGE"]["instrument_token"]),
-        ]
-        if futures_token is not None:
-            instruments.append((NSE_FO_SEGMENT, futures_token))
-        try:
-            stream.connect()
-            stream.subscribe(instruments)
-            log(f"Market-data socket connected and subscribed ({len(instruments)} instrument(s)).")
-        except Exception as exc:
-            log(f"Socket connect/subscribe failed ({exc!r}) -- using REST polling for today.")
-            stream = None
 
     _wait_until(config.MARKET_OPEN)
 
@@ -103,14 +83,12 @@ def _monitor_today(now: datetime, today: date, position: dict) -> int:
         if current is None or current.get("status") != "OPEN":
             log("Position no longer OPEN -- stopping monitoring.")
             break
-        exit_reason = check_and_exit_if_triggered(client, stream, current, log=log)
+        exit_reason = check_and_exit_if_triggered(client, current, log=log)
         if exit_reason:
             log(f"Exited: {exit_reason}")
             break
         time_module.sleep(config.POLL_INTERVAL_SECONDS)
 
-    if stream:
-        stream.disconnect()
     return 0
 
 

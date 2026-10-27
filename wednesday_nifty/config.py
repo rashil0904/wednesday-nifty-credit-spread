@@ -63,19 +63,11 @@ LIMIT_PRICE_BUFFER_PCTS = (0.03, 0.06, 0.10)  # increasing aggression per retry
 # reading a rolled/stale contract this close to its own expiry.
 ROLLOVER_PROXIMITY_DAYS = 2
 
-# --- Market-data streaming ------------------------------------------------------
-USE_WEBSOCKET = True
-STALE_TICK_SECONDS = 10
-RECONNECT_MAX_ATTEMPTS = 5
-POLL_INTERVAL_SECONDS = 5  # REST fallback poll cadence
-
-# CONFIRM BEFORE LIVE -- best guess, unverified. Every verified REST
-# market-data call on this account needed /apibinarymarketdata/ instead
-# of Symphony's documented /apimarketdata/ (see broker/xts_client.py),
-# so this defaults to the same binary-prefixed path. Run
-# scripts/socket_smoke_test.py (optionally with --path to try the
-# alternate) before trusting this.
-JAINAM_SOCKET_PATH = os.environ.get("JAINAM_SOCKET_PATH", "/apibinarymarketdata/socket.io")
+# --- Market data ---------------------------------------------------------------
+# REST polling only -- the WebSocket feed was removed (not working,
+# to be revisited later). See git history for broker/market_stream.py
+# if it needs to come back.
+POLL_INTERVAL_SECONDS = 5
 
 # --- Jainam (XTS) credentials --------------------------------------------------
 JAINAM_BASE_URL = os.environ.get("JAINAM_BASE_URL", "")

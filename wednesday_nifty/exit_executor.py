@@ -17,7 +17,6 @@ from datetime import datetime
 import config
 import notify
 import position_store as ps
-from broker.market_stream import get_ltp_with_fallback
 from broker.order_exec import execute_order
 from broker.xts_client import NSE_FO_SEGMENT
 from strategy.breakout import EntryTrigger
@@ -27,7 +26,7 @@ from strategy.stop_loss import should_stop_out
 CLOSE_ORDER = (("SHORT_ATM", "BUY"), ("LONG_HEDGE", "SELL"))
 
 
-def check_and_exit_if_triggered(client, stream, position: dict, log=print) -> str | None:
+def check_and_exit_if_triggered(client, position: dict, log=print) -> str | None:
     """One evaluation pass (call once per tick/poll iteration). Returns
     the exit_reason if an exit fired and completed (or was already in
     progress), else None."""
@@ -48,15 +47,15 @@ def check_and_exit_if_triggered(client, stream, position: dict, log=print) -> st
         if _rollover_check_blocks_sl(client, position, log):
             pass  # flagged and logged; fall through to profit-target/time-exit only
         else:
-            futures_ltp = get_ltp_with_fallback(stream, client, NSE_FO_SEGMENT, futures_token)
+            futures_ltp = client.get_ltp(NSE_FO_SEGMENT, futures_token)
             if should_stop_out(trigger, position["sl_level"], futures_ltp):
                 log(f"STOP_LOSS triggered: futures_ltp={futures_ltp} sl_level={position['sl_level']}")
                 return _try_exit(client, "STOP_LOSS", log)
 
     # --- profit target (every day the position is open, once legs are filled) ---
     if position.get("legs_filled") and position.get("entry_credit"):
-        short_ltp = get_ltp_with_fallback(stream, client, NSE_FO_SEGMENT, legs["SHORT_ATM"]["instrument_token"])
-        hedge_ltp = get_ltp_with_fallback(stream, client, NSE_FO_SEGMENT, legs["LONG_HEDGE"]["instrument_token"])
+        short_ltp = client.get_ltp(NSE_FO_SEGMENT, legs["SHORT_ATM"]["instrument_token"])
+        hedge_ltp = client.get_ltp(NSE_FO_SEGMENT, legs["LONG_HEDGE"]["instrument_token"])
         current_value = short_ltp - hedge_ltp
         if profit_target_hit(position["entry_credit"], current_value, config.PROFIT_TARGET_PCT):
             log(f"PROFIT_TARGET hit: current_value={current_value} entry_credit={position['entry_credit']}")
