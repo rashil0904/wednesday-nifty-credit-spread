@@ -77,6 +77,9 @@ JAINAM_INTERACTIVE_API_KEY = os.environ.get("JAINAM_INTERACTIVE_API_KEY", "")
 JAINAM_INTERACTIVE_API_SECRET = os.environ.get("JAINAM_INTERACTIVE_API_SECRET", "")
 JAINAM_SOURCE = os.environ.get("JAINAM_SOURCE", "WEBAPI")
 JAINAM_CLIENT_ID = os.environ.get("JAINAM_CLIENT_ID", "")  # required for order placement, not for dry run
+# Our API login under that client (e.g. SNM3358A21). The client account is
+# shared with other logins; position checks count only this login's trades.
+JAINAM_LOGIN_ID = os.environ.get("JAINAM_LOGIN_ID", "")
 
 # --- Telegram notifications -------------------------------------------------------
 # Every entry, exit, order failure, and skipped week sends a message here

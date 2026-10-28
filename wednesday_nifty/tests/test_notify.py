@@ -45,7 +45,7 @@ def test_send_returns_false_and_logs_when_post_raises():
         raise ConnectionError("network down")
 
     logged = []
-    ok = notify.send("hello", token="t", chat_id="c", post=fake_post, log=logged.append)
+    ok = notify.send("hello", token="t", chat_id="c", post=fake_post, log=logged.append, sleep=lambda s: None)
     assert ok is False
     assert "Telegram send failed" in logged[0]
 
@@ -55,6 +55,30 @@ def test_send_returns_false_and_logs_when_response_raises_for_status():
         return _FakeResponse(raise_exc=RuntimeError("400 Bad Request"))
 
     logged = []
-    ok = notify.send("hello", token="t", chat_id="c", post=fake_post, log=logged.append)
+    ok = notify.send("hello", token="t", chat_id="c", post=fake_post, log=logged.append, sleep=lambda s: None)
     assert ok is False
     assert "Telegram send failed" in logged[0]
+
+
+def test_send_retries_after_a_transient_failure():
+    attempts = []
+
+    def flaky_post(url, json, timeout):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise ConnectionError("blip")
+        return _FakeResponse()
+
+    logged = []
+    ok = notify.send("hello", token="t", chat_id="c", post=flaky_post, log=logged.append, sleep=lambda s: None)
+    assert ok is True
+    assert len(attempts) == 3
+
+
+def test_send_failure_log_never_contains_the_bot_token():
+    def fake_post(url, json, timeout):
+        raise ConnectionError(f"timed out on {url}")
+
+    logged = []
+    notify.send("hello", token="SECRET_TOKEN", chat_id="c", post=fake_post, log=logged.append, sleep=lambda s: None)
+    assert logged and not any("SECRET_TOKEN" in line for line in logged)

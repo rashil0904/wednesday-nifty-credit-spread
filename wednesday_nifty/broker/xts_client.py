@@ -114,6 +114,7 @@ class XTSDataClient:
         self.interactive_token = interactive_token
         self._interactive_error: str | None = None
         self.client_id: str | None = None
+        self.login_id: str | None = None  # our API login (e.g. SNM3358A21) -- see get_login_net_quantity
         self._session = requests.Session()
         self._index_list_cache: dict[int, dict[str, int]] = {}
         # Credentials needed to re-login if a token is rejected mid-run
@@ -174,6 +175,7 @@ class XTSDataClient:
         client._session = session
         client._interactive_error = interactive_error
         client.client_id = config.JAINAM_CLIENT_ID or None
+        client.login_id = config.JAINAM_LOGIN_ID or None
         client._market_api_key = market_api_key
         client._market_api_secret = market_api_secret
         client._interactive_api_key = interactive_api_key
@@ -394,12 +396,17 @@ class XTSDataClient:
         if self.client_id:
             params.setdefault("clientID", self.client_id)
         relogin_used = False
+        # Reads retry network blips; a POST/DELETE is sent once (place_order
+        # has its own look-up-by-tag recovery for a lost response).
         for attempt in range(5):
-            response = self._session.request(
-                method, self.base_url + path,
+            kwargs = dict(
                 headers={"Content-Type": "application/json", "Authorization": self.interactive_token},
                 params=params or None, json=body, timeout=15,
             )
+            if method == "GET":
+                response = _send_with_network_retry(self._session, method, self.base_url + path, **kwargs)
+            else:
+                response = self._session.request(method, self.base_url + path, **kwargs)
             if response.status_code == 429:
                 _time_module.sleep(2 * (attempt + 1))
                 continue
@@ -467,18 +474,28 @@ class XTSDataClient:
                 return order
         return None
 
-    def get_net_quantity(self, exchange_instrument_id: int) -> int:
-        """Net position quantity for one NSEFO instrument on this client (+long / -short)."""
+    def get_login_net_quantity(self, exchange_instrument_id: int) -> int:
+        """Net quantity TRADED TODAY by our own API login (JAINAM_LOGIN_ID,
+        e.g. SNM3358A21) on one NSEFO instrument (+bought / -sold). Built
+        from the trade book, not /portfolio/positions: the client account
+        (SNM3358) is shared with other logins (A02/A04/A16...) whose
+        positions must not count as ours, and positions can't be split by
+        login. Trade book is today-only -- callers add any carried quantity
+        from their own records."""
+        if not self.login_id:
+            raise XTSOrderError("JAINAM_LOGIN_ID is not set -- can't tell our trades from other logins'")
         try:
-            data = self._interactive_call("GET", "/interactive/portfolio/positions", params={"dayOrNet": "NetWise"})
+            data = self._interactive_call("GET", "/interactive/orders/trades")
         except XTSOrderError as exc:
             if "Data Not Available" in str(exc):
                 return 0
             raise
         total = 0
-        for row in (data.get("result") or {}).get("positionList", []):
-            if int(row["ExchangeInstrumentId"]) == int(exchange_instrument_id) and row["ExchangeSegment"] == "NSEFO":
-                total += int(float(row["Quantity"]))
+        for row in data.get("result") or []:
+            if (row.get("LoginID") == self.login_id and row.get("ExchangeSegment") == "NSEFO"
+                    and int(row["ExchangeInstrumentID"]) == int(exchange_instrument_id)):
+                qty = int(float(row["LastTradedQuantity"]))
+                total += qty if row["OrderSide"].upper() == "BUY" else -qty
         return total
 
 
@@ -491,6 +508,24 @@ def _login(session: requests.Session, base_url: str, path: str, app_key: str, se
         return data["result"]["token"]
     except KeyError as exc:
         raise RuntimeError(f"Login to {path} did not return a token: {data}") from exc
+
+
+NETWORK_RETRY_DELAYS_SECONDS = (2, 5, 10)
+
+
+def _send_with_network_retry(session: requests.Session, method: str, url: str, **kwargs) -> requests.Response:
+    """Rides out short network blips (timeouts, dropped connections) --
+    2026-10-28 12:17 a single 10s read timeout on a quotes call killed
+    run_entry.py outright. Only for idempotent calls (market data, logins,
+    interactive reads); order placement must never be blindly re-sent."""
+    for attempt in range(len(NETWORK_RETRY_DELAYS_SECONDS) + 1):
+        try:
+            return session.request(method, url, **kwargs)
+        except (requests.ConnectionError, requests.Timeout):
+            if attempt == len(NETWORK_RETRY_DELAYS_SECONDS):
+                raise
+            _time_module.sleep(NETWORK_RETRY_DELAYS_SECONDS[attempt])
+    raise AssertionError("unreachable")
 
 
 def _is_invalid_token_error(text: str) -> bool:
@@ -512,8 +547,8 @@ def _request(session: requests.Session, method: str, base_url: str, path: str, t
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = token
-        response = session.request(
-            method, base_url.rstrip("/") + path, headers=headers, params=params, json=json_body, timeout=10
+        response = _send_with_network_retry(
+            session, method, base_url.rstrip("/") + path, headers=headers, params=params, json=json_body, timeout=10
         )
         if not response.ok:
             if relogin is not None and attempt == 0 and _is_invalid_token_error(response.text):

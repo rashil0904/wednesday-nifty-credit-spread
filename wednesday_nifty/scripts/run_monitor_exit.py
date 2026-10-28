@@ -27,7 +27,7 @@ import config
 import notify
 import position_store as ps
 from broker.xts_client import XTSDataClient
-from exit_executor import check_and_exit_if_triggered
+from exit_executor import monitor_until_close
 
 
 def log(msg: str) -> None:
@@ -76,21 +76,7 @@ def _monitor_today(now: datetime, today: date, position: dict) -> int:
     _wait_until(config.MARKET_OPEN)
 
     log("Monitoring...")
-    while True:
-        now_ist = datetime.now(config.IST)
-        if now_ist.time() >= config.MARKET_CLOSE:
-            log("Market closed -- ending today's monitoring.")
-            break
-        current = ps.read_position()
-        if current is None or current.get("status") != "OPEN":
-            log("Position no longer OPEN -- stopping monitoring.")
-            break
-        exit_reason = check_and_exit_if_triggered(client, current, log=log)
-        if exit_reason:
-            log(f"Exited: {exit_reason}")
-            break
-        time_module.sleep(config.POLL_INTERVAL_SECONDS)
-
+    monitor_until_close(client, "run_monitor_exit.py", log=log)
     return 0
 
 

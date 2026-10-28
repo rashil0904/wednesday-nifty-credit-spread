@@ -12,6 +12,7 @@ position_store.acquire_exit_lock()) means whichever condition is
 evaluated and wins first locks out the others for good.
 """
 
+import time as time_module
 from datetime import datetime
 
 import config
@@ -19,6 +20,7 @@ import notify
 import position_store as ps
 from broker.order_exec import execute_order
 from broker.xts_client import NSE_FO_SEGMENT
+from poll_guard import PollGuard
 from strategy.breakout import EntryTrigger
 from strategy.exit_rules import profit_target_hit, time_exit_due
 from strategy.stop_loss import should_stop_out
@@ -102,14 +104,56 @@ def _rollover_check_blocks_sl(client, position: dict, log) -> bool:
     return False
 
 
+def monitor_until_close(client, name: str, log=print, sleep=time_module.sleep) -> str:
+    """Polls check_and_exit_if_triggered until market close or the
+    position stops being OPEN. A failed poll (network blip, broker
+    error) is logged/alerted via PollGuard and retried next poll -- it
+    never ends monitoring. Returns why it stopped: "MARKET_CLOSED",
+    "EXITED" or "NOT_OPEN"."""
+    guard = PollGuard(name, log=log)
+    while True:
+        if datetime.now(config.IST).time() >= config.MARKET_CLOSE:
+            log("Market closed -- ending today's monitoring.")
+            return "MARKET_CLOSED"
+        position = ps.read_position()
+        if position is None or position.get("status") != "OPEN":
+            status = position and position.get("status")
+            log(f"Position status is {status} -- stopping monitoring.")
+            if status != "CLOSED":
+                notify.send(f"[CRITICAL] {name}: stopped monitoring, position status is {status} "
+                            "(not OPEN or CLOSED). Review manually.", log=log)
+            return "NOT_OPEN"
+        try:
+            exit_reason = check_and_exit_if_triggered(client, position, log=log)
+        except Exception as exc:  # noqa: BLE001 -- one bad poll must not end monitoring
+            guard.failed(exc)
+            sleep(config.POLL_INTERVAL_SECONDS)
+            continue
+        guard.succeeded()
+        if exit_reason:
+            log(f"Exited: {exit_reason}")
+            return "EXITED"
+        sleep(config.POLL_INTERVAL_SECONDS)
+
+
 def _try_exit(client, reason: str, log) -> str | None:
     with ps.acquire_exit_lock():
         if not ps.begin_exit(reason):
             log(f"Exit '{reason}' lost the race -- another exit already won. Nothing to do.")
             return None
-        notify.send(f"[EXIT_SIGNAL] {reason} triggered -- closing position.", log=log)
         position = ps.read_position()
-        _close_position(client, position, reason, log)
+        if not position.get("exit_retrying"):
+            notify.send(f"[EXIT_SIGNAL] {reason} triggered -- closing position.", log=log)
+        try:
+            _close_position(client, position, reason, log)
+        except Exception:
+            # Back to OPEN so the next poll retries the exit (PollGuard
+            # alerts on the failure). Safe against double-closing: legs
+            # already closed are in closed_roles, and each leg's login-net
+            # check refuses a leg our login already bought/sold back today.
+            if (ps.read_position() or {}).get("status") == "EXITING":
+                ps.update_position(status="OPEN", exit_retrying=True)
+            raise
     return reason
 
 
@@ -137,13 +181,19 @@ def _close_position(client, position: dict, reason: str, log) -> None:
             ps.update_position(closed_roles=sorted(closed))
             continue
 
+        # Only our login's trades count (the client account is shared with
+        # other logins). The trade book is today-only, so a leg entered on
+        # an earlier day starts from its recorded quantity; today's trades
+        # by our login (e.g. a manual close) then adjust it.
         expected_sign = -1 if role == "SHORT_ATM" else 1
-        net = client.get_net_quantity(leg["instrument_token"])
+        entered_today = position["entry_date"] == datetime.now(config.IST).date().isoformat()
+        carried = 0 if entered_today else expected_sign * leg["quantity"]
+        net = carried + client.get_login_net_quantity(leg["instrument_token"])
         if net * expected_sign < leg["quantity"]:
-            log(f"!! {role}: account net {net:+d} doesn't match recorded {leg['quantity']} -- "
+            log(f"!! {role}: {config.JAINAM_LOGIN_ID} net {net:+d} doesn't match recorded {leg['quantity']} -- "
                 f"NOT trading this leg. Review manually.")
             notify.send(
-                f"[CRITICAL] {reason} exit blocked: {role} account net {net:+d} doesn't match "
+                f"[CRITICAL] {reason} exit blocked: {role} {config.JAINAM_LOGIN_ID} net {net:+d} doesn't match "
                 f"recorded {leg['quantity']} -- NOT trading this leg. Review manually.",
                 log=log,
             )

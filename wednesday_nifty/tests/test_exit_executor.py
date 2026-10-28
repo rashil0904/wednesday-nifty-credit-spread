@@ -29,7 +29,7 @@ class FakeClient:
     def get_nifty_fut_instrument(self, as_of):
         return self.future
 
-    def get_net_quantity(self, instrument_id):
+    def get_login_net_quantity(self, instrument_id):
         return self.net_quantities.get(instrument_id, 0)
 
     def place_order(self, instrument_id, side, qty, price, tag):
@@ -194,3 +194,43 @@ def test_already_closed_position_short_circuits():
     client.ltps = {FUTURES_TOKEN: 0.0, SHORT_TOKEN: 0.0, HEDGE_TOKEN: 0.0}
     reason = exit_executor.check_and_exit_if_triggered(client, ps.read_position())
     assert reason is None
+
+
+# =============================================================================
+# monitor_until_close survives failed polls (2026-10-28: one read timeout
+# killed the whole day's run)
+# =============================================================================
+
+def test_monitor_keeps_going_through_failed_polls(monkeypatch):
+    from datetime import time
+    monkeypatch.setattr(config, "MARKET_CLOSE", time.max)
+    open_high_breakout_position()
+    client = FakeClient()
+    client.ltps = {FUTURES_TOKEN: 25450.0, SHORT_TOKEN: 10.0, HEDGE_TOKEN: 3.0}  # profit target once a poll works
+    real_get_ltp = client.get_ltp
+    failures = iter([TimeoutError("read timed out"), ConnectionError("dropped")])
+
+    def flaky_get_ltp(segment, instrument_id):
+        exc = next(failures, None)
+        if exc:
+            raise exc
+        return real_get_ltp(segment, instrument_id)
+
+    client.get_ltp = flaky_get_ltp
+    result = exit_executor.monitor_until_close(client, "test", log=lambda m: None, sleep=lambda s: None)
+    assert result == "EXITED"
+    assert ps.read_position()["exit_reason"] == "PROFIT_TARGET"
+
+
+def test_exit_error_midway_sets_position_back_to_open_for_retry(monkeypatch):
+    open_high_breakout_position()
+
+    def boom(*args, **kwargs):
+        raise ConnectionError("network blip mid-exit")
+
+    monkeypatch.setattr(exit_executor, "_close_position", boom)
+    with pytest.raises(ConnectionError):
+        exit_executor._try_exit(FakeClient(), "PROFIT_TARGET", log=lambda m: None)
+    data = ps.read_position()
+    assert data["status"] == "OPEN"
+    assert data["exit_retrying"] is True

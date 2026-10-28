@@ -19,7 +19,7 @@ and logs exactly what it would do; places no orders.
 
 import sys
 import time as time_module
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -29,7 +29,8 @@ import notify
 import position_store as ps
 from broker.order_exec import execute_order
 from broker.xts_client import NSE_FO_SEGMENT, XTSDataClient
-from exit_executor import check_and_exit_if_triggered
+from exit_executor import monitor_until_close
+from poll_guard import PollGuard
 from strategy.breakout import check_breakout, fallback_trigger
 from strategy.calendar import WeekAction, following_tuesday, pick_nearest_expiry, resolve_entry_day_action, resolve_exit_date
 from strategy.levels import compute_3day_levels
@@ -66,6 +67,17 @@ def main() -> int:
     action = resolve_entry_day_action(today, is_wed, is_thu, wed_holiday, thu_holiday, week_already_resolved)
 
     if action is WeekAction.ALREADY_RESOLVED:
+        if (existing and existing.get("traded") and existing.get("status") == "OPEN"
+                and existing.get("entry_date") == today.isoformat()):
+            # Entered earlier today, then this process died (the watchdog
+            # restarts it) -- pick the same-day monitoring back up.
+            try:
+                with ps.acquire_entry_lock(today):
+                    log("Position entered earlier today is still OPEN -- resuming same-day monitoring.")
+                    return _monitor_entry_day(XTSDataClient.from_env(), today)
+            except ps.LockHeldError:
+                log("Entry lock held -- another run is already monitoring today's position.")
+                return 0
         log("Today is already resolved -- nothing to do.")
         return 0
     if action is WeekAction.WAIT_NOT_YET:
@@ -120,11 +132,18 @@ def _run_entry_day(now: datetime, today: date) -> int:
     log(f"09:15 futures open: {opening_price}")
 
     trigger = None
+    guard = PollGuard("run_entry.py breakout poll", log=log)
     while True:
         now_ist = datetime.now(config.IST)
         if now_ist.time() >= config.FALLBACK_TRIGGER_TIME:
             break
-        ltp = client.get_ltp(NSE_FO_SEGMENT, future["instrument_token"])
+        try:
+            ltp = client.get_ltp(NSE_FO_SEGMENT, future["instrument_token"])
+        except Exception as exc:  # noqa: BLE001 -- one bad poll must not end the entry day
+            guard.failed(exc)
+            time_module.sleep(config.POLL_INTERVAL_SECONDS)
+            continue
+        guard.succeeded()
         trigger = check_breakout(ltp, levels)
         if trigger:
             log(f"BREAKOUT: {trigger.value} at futures_ltp={ltp}")
@@ -133,7 +152,7 @@ def _run_entry_day(now: datetime, today: date) -> int:
         time_module.sleep(config.POLL_INTERVAL_SECONDS)
 
     if trigger is None:
-        price_1435 = client.get_ltp(NSE_FO_SEGMENT, future["instrument_token"])
+        price_1435 = _price_at_1435(client, future["instrument_token"], today)
         trigger = fallback_trigger(price_1435, opening_price)
         if trigger is None:
             ps.write_no_trade(today, f"14:35 fallback: price {price_1435} exactly equal to 09:15 open {opening_price}")
@@ -176,14 +195,16 @@ def _enter_and_monitor(client, today, future, levels, trigger) -> int:
         log(f"[DRY_RUN] WOULD SELL {quantity} {short_instr['tradingsymbol']} near {short_fill_price}")
         legs_filled_ok = True
     else:
-        net_hedge = client.get_net_quantity(hedge_instr["instrument_token"])
-        net_short = client.get_net_quantity(short_instr["instrument_token"])
+        # Only OUR login's trades today count -- other logins on the same
+        # client account may hold these strikes, and that's not our concern.
+        net_hedge = client.get_login_net_quantity(hedge_instr["instrument_token"])
+        net_short = client.get_login_net_quantity(short_instr["instrument_token"])
         if net_hedge != 0 or net_short != 0:
-            log(f"!! Pre-existing position on these instruments (hedge net={net_hedge}, short net={net_short}) "
-                "-- refusing to enter, review manually.")
-            notify.send(f"[ERROR] {today}: pre-existing non-zero net position on resolved instruments "
+            log(f"!! {config.JAINAM_LOGIN_ID} already traded these instruments today "
+                f"(hedge net={net_hedge}, short net={net_short}) -- refusing to enter, review manually.")
+            notify.send(f"[ERROR] {today}: {config.JAINAM_LOGIN_ID} already traded the resolved instruments today "
                          f"(hedge net={net_hedge}, short net={net_short}) -- refusing to enter, review manually.")
-            ps.write_no_trade(today, "Pre-existing non-zero net position on resolved instruments", mode="live")
+            ps.write_no_trade(today, f"{config.JAINAM_LOGIN_ID} already traded resolved instruments today", mode="live")
             return 1
 
         tag = f"E{today.strftime('%Y%m%d')}"
@@ -239,22 +260,14 @@ def _enter_and_monitor(client, today, future, levels, trigger) -> int:
 
     log("Monitoring for the rest of the trading day (profit target"
         + (" + stop loss" if trigger.value == "HIGH_BREAKOUT" else "") + ")...")
-    while True:
-        now_ist = datetime.now(config.IST)
-        if now_ist.time() >= config.MARKET_CLOSE:
-            log("Market closed -- ending today's monitoring. run_monitor_exit.py takes over on later days.")
-            notify.send(f"[INFO] {today}: market closed with position still OPEN -- "
-                         "run_monitor_exit.py takes over tomorrow.")
-            return 0
-        position = ps.read_position()
-        if position is None or position.get("status") != "OPEN":
-            log("Position no longer OPEN -- stopping monitoring.")
-            return 0
-        exit_reason = check_and_exit_if_triggered(client, position, log=log)
-        if exit_reason:
-            log(f"Exited same-day: {exit_reason}")
-            return 0
-        time_module.sleep(config.POLL_INTERVAL_SECONDS)
+    return _monitor_entry_day(client, today)
+
+
+def _monitor_entry_day(client, today: date) -> int:
+    if monitor_until_close(client, "run_entry.py monitor", log=log) == "MARKET_CLOSED":
+        notify.send(f"[INFO] {today}: market closed with position still OPEN -- "
+                     "run_monitor_exit.py takes over tomorrow.")
+    return 0
 
 
 def _wait_until(target_time) -> None:
@@ -265,6 +278,18 @@ def _wait_until(target_time) -> None:
     wait_seconds = (target_dt - now).total_seconds()
     log(f"Waiting {wait_seconds:.0f}s until {target_time}")
     time_module.sleep(max(0, wait_seconds))
+
+
+def _price_at_1435(client, instrument_token: int, today: date) -> float:
+    """Live LTP when we're on time; once the 14:35 minute is over (a run
+    restarted after a crash), that minute's candle open instead -- the
+    fallback must be decided off the 14:35 price, not whatever it is when
+    a late run gets here."""
+    if datetime.now(config.IST).time() < time(14, 36):
+        return client.get_ltp(NSE_FO_SEGMENT, instrument_token)
+    price = client.get_candle_at(NSE_FO_SEGMENT, instrument_token, today, config.FALLBACK_TRIGGER_TIME).open
+    log(f"Late run: using the 14:35 candle open {price} for the fallback, not the current price.")
+    return price
 
 
 def _get_opening_price_with_retry(client, instrument_token: int, today: date, retries: int = 5, delay: float = 5.0) -> float:

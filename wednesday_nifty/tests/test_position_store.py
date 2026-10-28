@@ -155,3 +155,20 @@ def test_monitor_lock_blocks_concurrent_acquisition():
         with pytest.raises(ps.LockHeldError):
             with ps.acquire_monitor_lock(date(2026, 9, 17)):
                 pass
+
+
+def test_lock_left_by_a_dead_process_is_taken_over():
+    import subprocess
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    (config.LOCK_DIR / "entry_2026-09-16.lock").write_text(str(dead.pid))
+    with ps.acquire_entry_lock(date(2026, 9, 16)):
+        pass  # must not raise -- the holder is gone
+
+
+def test_lock_held_by_a_live_process_still_blocks():
+    import os
+    (config.LOCK_DIR / "entry_2026-09-16.lock").write_text(str(os.getppid()))
+    with pytest.raises(ps.LockHeldError):
+        with ps.acquire_entry_lock(date(2026, 9, 16)):
+            pass

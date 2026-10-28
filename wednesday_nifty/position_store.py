@@ -155,6 +155,24 @@ class LockHeldError(Exception):
     """Raised when a lock is already held (by this or another process)."""
 
 
+def holder_pid_alive(lock_path: Path) -> bool:
+    """True if the lock file exists and the PID written in it is a live
+    process. An empty/unreadable lock counts as alive (it may be mid-write)."""
+    try:
+        pid = int(lock_path.read_text().strip())
+    except FileNotFoundError:
+        return False
+    except ValueError:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class _FileLock:
     def __init__(self, path: Path):
         self.path = path
@@ -164,7 +182,15 @@ class _FileLock:
         try:
             self._fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            raise LockHeldError(f"Lock already held: {self.path}") from None
+            if holder_pid_alive(self.path):
+                raise LockHeldError(f"Lock already held: {self.path}") from None
+            # Left behind by a process that was killed outright (SIGKILL,
+            # OOM, reboot) -- __exit__ never ran. Take it over once.
+            self.path.unlink(missing_ok=True)
+            try:
+                self._fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                raise LockHeldError(f"Lock already held: {self.path}") from None
         os.write(self._fd, str(os.getpid()).encode())
         return self
 
