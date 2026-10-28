@@ -41,6 +41,7 @@ not assumed):
     checks but is not yet in this project's .env.
 """
 
+import sys
 import time as _time_module
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -51,6 +52,15 @@ import requests
 from dotenv import load_dotenv
 
 import config
+
+# Shared across every strategy on this box trading through the same
+# Jainam account (wednesday_nifty, nifty-option-btst, nifty-strangle-options)
+# -- XTS allows only one live token per API key, so each project's own
+# login was silently kicking the others' out (see README / git log,
+# 2026-10-28 incident). All three must point at the SAME module (default
+# path below) for this to actually coordinate anything.
+sys.path.insert(0, "/root/shared_jainam")
+import session_cache as _session_cache  # noqa: E402
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -154,22 +164,33 @@ class XTSDataClient:
             raise RuntimeError(f"Missing in .env: {', '.join(missing)}")
 
         session = requests.Session()
-        market_token = _login(
-            session, base_url, "/apibinarymarketdata/auth/login", market_api_key, market_api_secret, source
-        )
-
-        interactive_token = None
-        interactive_error = None
-        if interactive_api_key and interactive_api_secret:
-            try:
-                interactive_token = _login(
-                    session, base_url, "/interactive/user/session",
-                    interactive_api_key, interactive_api_secret, source,
+        # Reuse another process's still-live session if one is cached;
+        # only log in (which would kick that other process out) if
+        # nothing usable is shared yet.
+        with _session_cache.FileLock():
+            cached = _session_cache.read_cache(base_url)
+            if cached:
+                market_token = cached["market_token"]
+                interactive_token = cached["interactive_token"]
+                interactive_error = None
+            else:
+                market_token = _login(
+                    session, base_url, "/apibinarymarketdata/auth/login", market_api_key, market_api_secret, source
                 )
-            except Exception as exc:  # noqa: BLE001 -- deliberately deferred, see docstring
-                interactive_error = str(exc)
-        else:
-            interactive_error = "JAINAM_INTERACTIVE_API_KEY/SECRET not set in .env"
+                interactive_token = None
+                interactive_error = None
+                if interactive_api_key and interactive_api_secret:
+                    try:
+                        interactive_token = _login(
+                            session, base_url, "/interactive/user/session",
+                            interactive_api_key, interactive_api_secret, source,
+                        )
+                    except Exception as exc:  # noqa: BLE001 -- deliberately deferred, see docstring
+                        interactive_error = str(exc)
+                else:
+                    interactive_error = "JAINAM_INTERACTIVE_API_KEY/SECRET not set in .env"
+                if interactive_token:  # only cache a pair that's actually usable by others
+                    _session_cache.write_cache(base_url, market_token, interactive_token)
 
         client = cls(base_url=base_url, market_token=market_token, interactive_token=interactive_token)
         client._session = session
@@ -186,17 +207,37 @@ class XTSDataClient:
     # --- low-level request helpers ----------------------------------------
 
     def _relogin_market(self) -> str:
-        self.market_token = _login(
-            self._session, self.base_url, "/apibinarymarketdata/auth/login",
-            self._market_api_key, self._market_api_secret, self._source,
-        )
+        """Adopt a token another process already refreshed, or log in
+        ourselves (under the shared lock, so two processes never both
+        log in and keep kicking each other out)."""
+        stale = self.market_token
+        with _session_cache.FileLock():
+            cached = _session_cache.read_cache(self.base_url)
+            if cached and cached["market_token"] != stale:
+                self.market_token = cached["market_token"]
+            else:
+                self.market_token = _login(
+                    self._session, self.base_url, "/apibinarymarketdata/auth/login",
+                    self._market_api_key, self._market_api_secret, self._source,
+                )
+            interactive_for_cache = cached["interactive_token"] if cached else self.interactive_token
+            if interactive_for_cache:
+                _session_cache.write_cache(self.base_url, self.market_token, interactive_for_cache)
         return self.market_token
 
     def _relogin_interactive(self) -> None:
-        self.interactive_token = _login(
-            self._session, self.base_url, "/interactive/user/session",
-            self._interactive_api_key, self._interactive_api_secret, self._source,
-        )
+        stale = self.interactive_token
+        with _session_cache.FileLock():
+            cached = _session_cache.read_cache(self.base_url)
+            if cached and cached["interactive_token"] != stale:
+                self.interactive_token = cached["interactive_token"]
+            else:
+                self.interactive_token = _login(
+                    self._session, self.base_url, "/interactive/user/session",
+                    self._interactive_api_key, self._interactive_api_secret, self._source,
+                )
+            market_for_cache = cached["market_token"] if cached else self.market_token
+            _session_cache.write_cache(self.base_url, market_for_cache, self.interactive_token)
 
     def _market_get(self, path: str, params: dict) -> dict:
         return _request(self._session, "GET", self.base_url, path, self.market_token,

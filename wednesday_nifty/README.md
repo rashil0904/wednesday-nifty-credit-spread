@@ -87,6 +87,29 @@ every few minutes.
 10 9 * * 1-5 cd /path/to/wednesday_nifty && .venv/bin/python scripts/run_monitor_exit.py >> logs/cron.log 2>&1
 ```
 
+## Shared Jainam login session (2026-10-28)
+
+This Jainam account/API key is shared with two other live strategies on
+this box (`/root/nifty-option-btst`, `/root/nifty-strangle-options`).
+XTS allows only ONE live token per API key -- each project independently
+calling its own login was silently invalidating the others' sessions,
+which is what caused the 2026-10-28 incident (crash at 09:15, a real
+network-timeout crash at 12:17 whose own Telegram alert was also lost,
+then a late/forced entry at 14:48 after a stale-position false alarm).
+
+Fix: all three projects now read/write the SAME cache file at
+`/root/shared_jainam/.jainam_session.json` (via
+`/root/shared_jainam/session_cache.py`, a small standalone module with
+no project-specific dependencies) under a file lock, so at most one
+real login happens account-wide; everyone else adopts whichever token
+is already cached. `broker/xts_client.py`'s `from_env()` and its
+`_relogin_market`/`_relogin_interactive` methods go through this module
+instead of calling `_login()` directly. Override the path with
+`JAINAM_SESSION_FILE` in `.env` -- but all three projects MUST point at
+the identical path, or this coordinates nothing. Verified live
+2026-10-28: a login from one project is correctly adopted by another
+without a second login (confirmed via the cache file's unchanged mtime).
+
 ## Open items — depends on the live API, not guessed
 
 1. **WebSocket market data** — removed (2026-10-27). It never worked
