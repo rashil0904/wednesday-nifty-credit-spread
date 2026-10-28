@@ -42,6 +42,7 @@ not assumed):
 """
 
 import time as _time_module
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from zoneinfo import ZoneInfo
@@ -115,6 +116,14 @@ class XTSDataClient:
         self.client_id: str | None = None
         self._session = requests.Session()
         self._index_list_cache: dict[int, dict[str, int]] = {}
+        # Credentials needed to re-login if a token is rejected mid-run
+        # (see _request's relogin param) -- set by from_env(), None if
+        # constructed directly (e.g. in tests that never trigger a retry).
+        self._market_api_key: str | None = None
+        self._market_api_secret: str | None = None
+        self._interactive_api_key: str | None = None
+        self._interactive_api_secret: str | None = None
+        self._source: str | None = None
 
     @classmethod
     def from_env(cls, env_path: str | None = None) -> "XTSDataClient":
@@ -165,15 +174,35 @@ class XTSDataClient:
         client._session = session
         client._interactive_error = interactive_error
         client.client_id = config.JAINAM_CLIENT_ID or None
+        client._market_api_key = market_api_key
+        client._market_api_secret = market_api_secret
+        client._interactive_api_key = interactive_api_key
+        client._interactive_api_secret = interactive_api_secret
+        client._source = source
         return client
 
     # --- low-level request helpers ----------------------------------------
 
+    def _relogin_market(self) -> str:
+        self.market_token = _login(
+            self._session, self.base_url, "/apibinarymarketdata/auth/login",
+            self._market_api_key, self._market_api_secret, self._source,
+        )
+        return self.market_token
+
+    def _relogin_interactive(self) -> None:
+        self.interactive_token = _login(
+            self._session, self.base_url, "/interactive/user/session",
+            self._interactive_api_key, self._interactive_api_secret, self._source,
+        )
+
     def _market_get(self, path: str, params: dict) -> dict:
-        return _request(self._session, "GET", self.base_url, path, self.market_token, params=params)
+        return _request(self._session, "GET", self.base_url, path, self.market_token,
+                         params=params, relogin=self._relogin_market)
 
     def _market_post(self, path: str, body: dict) -> dict:
-        return _request(self._session, "POST", self.base_url, path, self.market_token, json_body=body)
+        return _request(self._session, "POST", self.base_url, path, self.market_token,
+                         json_body=body, relogin=self._relogin_market)
 
     # --- quotes / spot ------------------------------------------------------
 
@@ -355,12 +384,16 @@ class XTSDataClient:
     # These place REAL orders. Only called when config.JAINAM_LIVE is True.
 
     def _interactive_call(self, method: str, path: str, params: dict | None = None, body: dict | None = None) -> dict:
-        """Interactive request that keeps Jainam's error body and rides out 429 rate limits."""
+        """Interactive request that keeps Jainam's error body, rides out
+        429 rate limits, and re-logs in ONCE if the token is rejected
+        (e-session-0007) -- same live failure mode as _request's
+        relogin, just on the Interactive (orders/positions) session."""
         if not self.interactive_token:
             raise XTSOrderError(f"Interactive API session not available: {self._interactive_error}")
         params = dict(params or {})
         if self.client_id:
             params.setdefault("clientID", self.client_id)
+        relogin_used = False
         for attempt in range(5):
             response = self._session.request(
                 method, self.base_url + path,
@@ -375,6 +408,10 @@ class XTSDataClient:
             except ValueError:
                 raise XTSOrderError(f"{method} {path}: HTTP {response.status_code} {response.text[:200]}")
             if response.status_code >= 400 or data.get("type") == "error":
+                if not relogin_used and data.get("code") == "e-session-0007":
+                    relogin_used = True
+                    self._relogin_interactive()
+                    continue
                 raise XTSOrderError(f"{method} {path}: {data.get('code')} {data.get('description')}")
             return data
         raise XTSOrderError(f"{method} {path}: still rate limited (429) after retries")
@@ -456,19 +493,39 @@ def _login(session: requests.Session, base_url: str, path: str, app_key: str, se
         raise RuntimeError(f"Login to {path} did not return a token: {data}") from exc
 
 
+def _is_invalid_token_error(text: str) -> bool:
+    return "e-session-0007" in text
+
+
 def _request(session: requests.Session, method: str, base_url: str, path: str, token: str | None,
-             params: dict | None = None, json_body: dict | None = None) -> dict:
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = token
-    response = session.request(
-        method, base_url.rstrip("/") + path, headers=headers, params=params, json=json_body, timeout=10
-    )
-    if not response.ok:
-        raise RuntimeError(
-            f"XTS API HTTP {response.status_code} on {method} {path}: {response.text[:500]}"
+             params: dict | None = None, json_body: dict | None = None,
+             relogin: Callable[[], str] | None = None) -> dict:
+    """relogin, if given, is called ONCE if the token is rejected
+    (e-session-0007 'Invalid Token') -- it must log in again and return
+    the new token, which is retried immediately. This is the live
+    failure mode seen 2026-10-28: the market-data session died mid-run
+    (most likely another process logging in with the same API key --
+    see README open items), killing run_entry.py outright with no
+    retry. Never passed for the initial login call itself (nothing to
+    re-login from yet)."""
+    for attempt in range(2):
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = token
+        response = session.request(
+            method, base_url.rstrip("/") + path, headers=headers, params=params, json=json_body, timeout=10
         )
-    data = response.json()
-    if data.get("type") == "error":
-        raise RuntimeError(f"XTS API error on {path}: {data.get('description')}")
-    return data
+        if not response.ok:
+            if relogin is not None and attempt == 0 and _is_invalid_token_error(response.text):
+                token = relogin()
+                continue
+            raise RuntimeError(
+                f"XTS API HTTP {response.status_code} on {method} {path}: {response.text[:500]}"
+            )
+        data = response.json()
+        if data.get("type") == "error":
+            if relogin is not None and attempt == 0 and data.get("code") == "e-session-0007":
+                token = relogin()
+                continue
+            raise RuntimeError(f"XTS API error on {path}: {data.get('description')}")
+        return data

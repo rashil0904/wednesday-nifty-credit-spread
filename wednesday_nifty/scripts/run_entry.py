@@ -38,7 +38,11 @@ from strategy.strikes import calculate_atm_strike, calculate_hedge_strike
 
 
 def log(msg: str) -> None:
-    print(f"[{datetime.now(config.IST).isoformat()}] {msg}")
+    # flush=True: stdout is fully buffered (not line-buffered) once
+    # redirected to a file, as cron does -- without this, nothing shows
+    # up in the log until the buffer fills or the process exits, making
+    # a perfectly healthy long poll indistinguishable from a real hang.
+    print(f"[{datetime.now(config.IST).isoformat()}] {msg}", flush=True)
 
 
 def main() -> int:

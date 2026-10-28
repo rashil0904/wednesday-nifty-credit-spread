@@ -31,7 +31,9 @@ from exit_executor import check_and_exit_if_triggered
 
 
 def log(msg: str) -> None:
-    print(f"[{datetime.now(config.IST).isoformat()}] {msg}")
+    # flush=True: see run_entry.py's log() for why -- buffered stdout
+    # makes a healthy long poll look identical to a real hang in the log.
+    print(f"[{datetime.now(config.IST).isoformat()}] {msg}", flush=True)
 
 
 def main() -> int:
