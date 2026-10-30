@@ -1,4 +1,5 @@
 .env
+.env.bak*
 .venv/
 positions.json
 locks/
