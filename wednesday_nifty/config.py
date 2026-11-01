@@ -47,7 +47,7 @@ PROFIT_TARGET_PCT = 0.90
 HIGH_BREAKOUT_SL_ENABLED = True
 
 # --- Sizing -------------------------------------------------------------------
-LOTS = 1  # fixed lots per trade; lot size itself comes from the instrument master
+LOTS = 4  # fixed lots per trade, both legs (confirmed by user, 2026-11-01; previously 1); lot size itself comes from the instrument master
 
 # --- NSE trading holidays -----------------------------------------------------
 # No holiday calendar feed -- add dates here as they come up.
