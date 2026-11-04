@@ -30,7 +30,7 @@ import position_store as ps
 from strategy.calendar import WeekAction, resolve_entry_day_action
 
 WATCH_FROM = time(9, 16)   # both scripts are launched by cron at 09:10
-WATCH_UNTIL = time(15, 25)
+WATCH_UNTIL = time(15, 29)  # must still cover the 15:28 stop-loss check
 
 
 def log(msg: str) -> None:

@@ -73,6 +73,11 @@ def open_high_breakout_position(*, legs_filled=True, exit_date=FAR_FUTURE_EXIT_D
         ps.update_position(legs_filled=True)
 
 
+def at_time(monkeypatch, hh, mm, day=date(2026, 9, 17)):
+    """Pin exit_executor's clock (the SL is only checked at/after 15:28)."""
+    monkeypatch.setattr(exit_executor, "_now", lambda: datetime(day.year, day.month, day.day, hh, mm, tzinfo=config.IST))
+
+
 # =============================================================================
 # No exit when nothing triggered
 # =============================================================================
@@ -90,7 +95,8 @@ def test_no_exit_when_nothing_triggered():
 # Stop loss (HIGH_BREAKOUT)
 # =============================================================================
 
-def test_stop_loss_triggers_exit_in_dry_run():
+def test_stop_loss_triggers_exit_in_dry_run(monkeypatch):
+    at_time(monkeypatch, 15, 28)
     open_high_breakout_position()
     client = FakeClient()
     client.ltps = {FUTURES_TOKEN: 25399.0, SHORT_TOKEN: 150.0, HEDGE_TOKEN: 80.0}  # below sl_level=25400
@@ -121,7 +127,8 @@ def test_low_breakout_position_never_stops_out_even_at_extreme_price():
     assert reason is None
 
 
-def test_gap_down_open_below_sl_on_a_later_day_fires_on_first_tick():
+def test_gap_down_below_sl_on_a_later_day_fires_at_the_1528_check(monkeypatch):
+    at_time(monkeypatch, 15, 28)
     open_high_breakout_position()
     client = FakeClient()
     client.ltps = {FUTURES_TOKEN: 25000.0, SHORT_TOKEN: 150.0, HEDGE_TOKEN: 80.0}  # gap-down open
@@ -147,7 +154,8 @@ def test_profit_target_triggers_exit_when_sl_not_breached():
 # SL and profit target both true on the same check -> exactly one exit
 # =============================================================================
 
-def test_sl_and_profit_target_both_true_on_same_check_exactly_one_exit():
+def test_sl_and_profit_target_both_true_on_same_check_exactly_one_exit(monkeypatch):
+    at_time(monkeypatch, 15, 28)
     open_high_breakout_position()
     client = FakeClient()
     # Futures below sl_level AND spread value already at the profit target.
@@ -234,3 +242,44 @@ def test_exit_error_midway_sets_position_back_to_open_for_retry(monkeypatch):
     data = ps.read_position()
     assert data["status"] == "OPEN"
     assert data["exit_retrying"] is True
+
+
+
+# =============================================================================
+# Stop loss is a once-a-day 15:28 check, not tick-level (user rule 2026-11-04)
+# =============================================================================
+
+def test_sl_not_checked_before_1528_even_far_below_level(monkeypatch):
+    at_time(monkeypatch, 15, 27)
+    open_high_breakout_position()
+    client = FakeClient()
+    client.ltps = {FUTURES_TOKEN: 20000.0, SHORT_TOKEN: 150.0, HEDGE_TOKEN: 80.0}
+    assert exit_executor.check_and_exit_if_triggered(client, ps.read_position()) is None
+    assert ps.read_position()["status"] == "OPEN"
+    assert "sl_checked_on" not in ps.read_position()
+
+
+def test_sl_above_level_at_1528_holds_and_is_not_rechecked_that_day(monkeypatch):
+    at_time(monkeypatch, 15, 28)
+    open_high_breakout_position()
+    client = FakeClient()
+    client.ltps = {FUTURES_TOKEN: 25450.0, SHORT_TOKEN: 150.0, HEDGE_TOKEN: 80.0}
+    assert exit_executor.check_and_exit_if_triggered(client, ps.read_position()) is None
+    assert ps.read_position()["sl_checked_on"] == "2026-09-17"
+
+    at_time(monkeypatch, 15, 29)  # price falls below SL after the 15:28 check
+    client.ltps[FUTURES_TOKEN] = 20000.0
+    assert exit_executor.check_and_exit_if_triggered(client, ps.read_position()) is None
+    assert ps.read_position()["status"] == "OPEN"
+
+
+def test_sl_is_checked_again_at_1528_the_next_day(monkeypatch):
+    at_time(monkeypatch, 15, 28)
+    open_high_breakout_position()
+    client = FakeClient()
+    client.ltps = {FUTURES_TOKEN: 25450.0, SHORT_TOKEN: 150.0, HEDGE_TOKEN: 80.0}
+    exit_executor.check_and_exit_if_triggered(client, ps.read_position())
+
+    at_time(monkeypatch, 15, 28, day=date(2026, 9, 18))
+    client.ltps[FUTURES_TOKEN] = 25399.0
+    assert exit_executor.check_and_exit_if_triggered(client, ps.read_position()) == "STOP_LOSS"

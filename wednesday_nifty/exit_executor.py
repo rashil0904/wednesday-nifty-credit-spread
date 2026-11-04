@@ -28,6 +28,10 @@ from strategy.stop_loss import should_stop_out
 CLOSE_ORDER = (("SHORT_ATM", "BUY"), ("LONG_HEDGE", "SELL"))
 
 
+def _now() -> datetime:
+    return datetime.now(config.IST)
+
+
 def check_and_exit_if_triggered(client, position: dict, log=print) -> str | None:
     """One evaluation pass (call once per tick/poll iteration). Returns
     the exit_reason if an exit fired and completed (or was already in
@@ -39,20 +43,33 @@ def check_and_exit_if_triggered(client, position: dict, log=print) -> str | None
     legs = {leg["role"]: leg for leg in position["legs"]}
     futures_token = position.get("futures_instrument_token")
 
-    # --- stop loss (HIGH_BREAKOUT only, only once both legs are confirmed filled) ---
+    now = _now()
+    today = now.date().isoformat()
+
+    # --- stop loss (HIGH_BREAKOUT only, once both legs are filled) ---
+    # Checked ONCE a day at SL_CHECK_TIME (15:28), not every tick: the
+    # futures price at 15:28 decides it (user rule, 2026-11-04). The first
+    # poll at/after 15:28 evaluates it; a failed price fetch is retried on
+    # the next poll since sl_checked_on is only written after a check.
     if (
         config.HIGH_BREAKOUT_SL_ENABLED
         and position.get("legs_filled")
         and position.get("sl_level") is not None
         and futures_token is not None
+        and now.time() >= config.SL_CHECK_TIME
+        and position.get("sl_checked_on") != today
     ):
         if _rollover_check_blocks_sl(client, position, log):
             pass  # flagged and logged; fall through to profit-target/time-exit only
         else:
             futures_ltp = client.get_ltp(NSE_FO_SEGMENT, futures_token)
+            ps.update_position(sl_checked_on=today)
             if should_stop_out(trigger, position["sl_level"], futures_ltp):
-                log(f"STOP_LOSS triggered: futures_ltp={futures_ltp} sl_level={position['sl_level']}")
+                log(f"STOP_LOSS triggered at {config.SL_CHECK_TIME}: futures_ltp={futures_ltp} "
+                    f"sl_level={position['sl_level']}")
                 return _try_exit(client, "STOP_LOSS", log)
+            log(f"{config.SL_CHECK_TIME} stop-loss check: futures_ltp={futures_ltp} >= "
+                f"sl_level={position['sl_level']} -- holding.")
 
     # --- profit target (every day the position is open, once legs are filled) ---
     if position.get("legs_filled") and position.get("entry_credit"):
@@ -64,7 +81,6 @@ def check_and_exit_if_triggered(client, position: dict, log=print) -> str | None
             return _try_exit(client, "PROFIT_TARGET", log)
 
     # --- time exit (off the clock, never off ticks) ---
-    now = datetime.now(config.IST)
     exit_date = datetime.strptime(position["exit_date"], "%Y-%m-%d").date()
     if time_exit_due(now, exit_date, config.EXIT_TIME):
         log(f"TIME_EXIT due: now={now.isoformat()} exit_date={exit_date}")

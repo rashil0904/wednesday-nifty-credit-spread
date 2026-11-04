@@ -45,6 +45,10 @@ PROFIT_TARGET_PCT = 0.90
 # LOW_BREAKOUT / TIME_1435_RED / TIME_1435_GREEN entries. See
 # strategy/stop_loss.py.
 HIGH_BREAKOUT_SL_ENABLED = True
+# The SL is NOT tick-level: it's evaluated once a day, off the futures
+# price at this time -- below sl_level at 15:28 -> exit (user rule,
+# 2026-11-04). Applies on the entry day and every later day.
+SL_CHECK_TIME = time(15, 28)
 
 # --- Sizing -------------------------------------------------------------------
 LOTS = 4  # fixed lots per trade, both legs (confirmed by user, 2026-11-01; previously 1); lot size itself comes from the instrument master

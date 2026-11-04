@@ -26,10 +26,11 @@ removed -- see "Open items" below). Dry run by default.
 - **Exits**, whichever fires first:
   - Profit target: 90% of entry credit captured (every day, every tick).
   - **Stop loss — `HIGH_BREAKOUT` entries only**: SL level = the
-    3D_HIGH that was breached, fixed at entry forever. Exits the whole
-    spread the instant NIFTY futures trade below it, intraday or as a
-    gap-down open on a later day. No stop loss exists for any other
-    trigger — do not add one.
+    3D_HIGH that was breached, fixed at entry forever. **Not
+    tick-level**: checked once a day at 15:28 (entry day and every later
+    day) — if NIFTY futures are below the level at 15:28, the whole
+    spread is exited; intraday dips that recover by 15:28 don't count.
+    No stop loss exists for any other trigger — do not add one.
   - Time exit: the Tuesday (or holiday-shifted earlier trading day) at
     `config.EXIT_TIME` (15:15), unconditional.
 - Order sequencing: entry BUYs the hedge leg first, then SELLs the

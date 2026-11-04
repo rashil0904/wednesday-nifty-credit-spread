@@ -15,10 +15,10 @@ def should_stop_out(trigger: EntryTrigger, sl_level: float, futures_ltp: float) 
     entry time, never recomputed daily (the caller reads it back from
     the position file across a restart, see position_store.py).
 
-    Triggers when futures LTP falls strictly below sl_level. This same
-    check covers both an intraday pullback through the level and a
-    gap-down open below it on a later day -- whichever is the first
-    valid tick to see it."""
+    Triggers when futures LTP is strictly below sl_level. NOT tick-level:
+    the caller (exit_executor) evaluates this once a day, on the futures
+    price at config.SL_CHECK_TIME (15:28) -- intraday dips that recover
+    by 15:28 don't stop out (user rule, 2026-11-04)."""
     if trigger is not EntryTrigger.HIGH_BREAKOUT:
         return False
     return futures_ltp < sl_level
