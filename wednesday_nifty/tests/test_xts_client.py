@@ -37,6 +37,7 @@ class FakeSession:
 
 
 INVALID_TOKEN_BODY = {"type": "error", "code": "e-session-0007", "description": "Invalid Token"}
+STALE_TOKEN_BODY_0006 = {"type": "error", "code": "e-session-0006", "description": "Token/Authorization not found"}
 OK_QUOTE_BODY = {"type": "success", "result": {"ok": True}}
 LOGIN_OK_BODY = {"type": "success", "result": {"token": "NEW_TOKEN"}}
 
@@ -71,6 +72,18 @@ def test_request_with_relogin_retries_once_and_succeeds():
     assert len(relogin_calls) == 1
     assert len(session.calls) == 2
     assert session.calls[1]["headers"]["Authorization"] == "NEW_TOKEN"
+
+
+def test_request_with_relogin_also_retries_on_e_session_0006():
+    """2026-11-17 live regression: a stale cached market token returned
+    e-session-0006 "Token/Authorization not found", not 0007, and fell
+    through to a plain HTTPError with no retry at all."""
+    session = FakeSession([
+        FakeResponse(400, STALE_TOKEN_BODY_0006, ok=False),
+        FakeResponse(200, OK_QUOTE_BODY),
+    ])
+    data = xts._request(session, "GET", "https://x", "/p", "OLD_TOKEN", relogin=lambda: "NEW_TOKEN")
+    assert data == OK_QUOTE_BODY
 
 
 def test_request_with_relogin_gives_up_after_one_retry_if_still_invalid():

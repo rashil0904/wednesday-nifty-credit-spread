@@ -57,6 +57,7 @@ LOTS = 4  # fixed lots per trade, both legs (confirmed by user, 2026-11-01; prev
 # No holiday calendar feed -- add dates here as they come up.
 NSE_HOLIDAYS: set[date] = {
     date(2026, 10, 2),  # Gandhi Jayanti
+    date(2026, 11, 10),  # Holiday (confirmed by user, 2026-11-07)
 }
 
 # --- Order execution -----------------------------------------------------------

@@ -429,8 +429,9 @@ class XTSDataClient:
     def _interactive_call(self, method: str, path: str, params: dict | None = None, body: dict | None = None) -> dict:
         """Interactive request that keeps Jainam's error body, rides out
         429 rate limits, and re-logs in ONCE if the token is rejected
-        (e-session-0007) -- same live failure mode as _request's
-        relogin, just on the Interactive (orders/positions) session."""
+        (any of SESSION_INVALID_CODES) -- same live failure mode as
+        _request's relogin, just on the Interactive (orders/positions)
+        session."""
         if not self.interactive_token:
             raise XTSOrderError(f"Interactive API session not available: {self._interactive_error}")
         params = dict(params or {})
@@ -456,7 +457,7 @@ class XTSDataClient:
             except ValueError:
                 raise XTSOrderError(f"{method} {path}: HTTP {response.status_code} {response.text[:200]}")
             if response.status_code >= 400 or data.get("type") == "error":
-                if not relogin_used and data.get("code") == "e-session-0007":
+                if not relogin_used and data.get("code") in SESSION_INVALID_CODES:
                     relogin_used = True
                     self._relogin_interactive()
                     continue
@@ -569,15 +570,22 @@ def _send_with_network_retry(session: requests.Session, method: str, url: str, *
     raise AssertionError("unreachable")
 
 
+# 0007 "Invalid Token" (market data), 0005 "Token/Authorization not found"
+# (interactive), 0006 "Token/Authorization not found" (market data -- hit
+# live 2026-11-17: a cached market token gone stale fell through to a plain
+# HTTPError since only 0007 was recognized; no retry/re-login happened).
+SESSION_INVALID_CODES = {"e-session-0005", "e-session-0006", "e-session-0007"}
+
+
 def _is_invalid_token_error(text: str) -> bool:
-    return "e-session-0007" in text
+    return any(code in text for code in SESSION_INVALID_CODES)
 
 
 def _request(session: requests.Session, method: str, base_url: str, path: str, token: str | None,
              params: dict | None = None, json_body: dict | None = None,
              relogin: Callable[[], str] | None = None) -> dict:
     """relogin, if given, is called ONCE if the token is rejected
-    (e-session-0007 'Invalid Token') -- it must log in again and return
+    (any of SESSION_INVALID_CODES) -- it must log in again and return
     the new token, which is retried immediately. This is the live
     failure mode seen 2026-10-28: the market-data session died mid-run
     (most likely another process logging in with the same API key --
@@ -600,7 +608,7 @@ def _request(session: requests.Session, method: str, base_url: str, path: str, t
             )
         data = response.json()
         if data.get("type") == "error":
-            if relogin is not None and attempt == 0 and data.get("code") == "e-session-0007":
+            if relogin is not None and attempt == 0 and data.get("code") in SESSION_INVALID_CODES:
                 token = relogin()
                 continue
             raise RuntimeError(f"XTS API error on {path}: {data.get('description')}")
