@@ -570,11 +570,13 @@ def _send_with_network_retry(session: requests.Session, method: str, url: str, *
     raise AssertionError("unreachable")
 
 
-# 0007 "Invalid Token" (market data), 0005 "Token/Authorization not found"
-# (interactive), 0006 "Token/Authorization not found" (market data -- hit
-# live 2026-11-17: a cached market token gone stale fell through to a plain
-# HTTPError since only 0007 was recognized; no retry/re-login happened).
-SESSION_INVALID_CODES = {"e-session-0005", "e-session-0006", "e-session-0007"}
+# 0007 "Invalid Token" (market data), 0005/0006 "Token/Authorization not
+# found" (interactive/market data -- hit live 2026-11-17), e-token-0001
+# "Invalid Token" (interactive -- hit live 2026-11-18: run_entry.py's
+# pre-entry net-quantity check crashed outright with this code, since
+# only the e-session-* family was recognized; the watchdog restart
+# papered over it that time, but the retry should handle it directly).
+SESSION_INVALID_CODES = {"e-session-0005", "e-session-0006", "e-session-0007", "e-token-0001"}
 
 
 def _is_invalid_token_error(text: str) -> bool:

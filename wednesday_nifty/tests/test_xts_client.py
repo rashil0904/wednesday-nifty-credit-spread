@@ -38,6 +38,7 @@ class FakeSession:
 
 INVALID_TOKEN_BODY = {"type": "error", "code": "e-session-0007", "description": "Invalid Token"}
 STALE_TOKEN_BODY_0006 = {"type": "error", "code": "e-session-0006", "description": "Token/Authorization not found"}
+STALE_TOKEN_BODY_TOKEN0001 = {"type": "error", "code": "e-token-0001", "description": "Invalid Token"}
 OK_QUOTE_BODY = {"type": "success", "result": {"ok": True}}
 LOGIN_OK_BODY = {"type": "success", "result": {"token": "NEW_TOKEN"}}
 
@@ -80,6 +81,19 @@ def test_request_with_relogin_also_retries_on_e_session_0006():
     through to a plain HTTPError with no retry at all."""
     session = FakeSession([
         FakeResponse(400, STALE_TOKEN_BODY_0006, ok=False),
+        FakeResponse(200, OK_QUOTE_BODY),
+    ])
+    data = xts._request(session, "GET", "https://x", "/p", "OLD_TOKEN", relogin=lambda: "NEW_TOKEN")
+    assert data == OK_QUOTE_BODY
+
+
+def test_request_with_relogin_also_retries_on_e_token_0001():
+    """2026-11-18 live regression: run_entry.py's pre-entry net-quantity
+    check crashed outright on e-token-0001 "Invalid Token" -- a code
+    outside the e-session-* family, so it fell through with no retry
+    at all (same failure shape as the 0006 regression above)."""
+    session = FakeSession([
+        FakeResponse(400, STALE_TOKEN_BODY_TOKEN0001, ok=False),
         FakeResponse(200, OK_QUOTE_BODY),
     ])
     data = xts._request(session, "GET", "https://x", "/p", "OLD_TOKEN", relogin=lambda: "NEW_TOKEN")
@@ -160,6 +174,19 @@ def _client_for_interactive(responses: list[FakeResponse]) -> xts.XTSDataClient:
 def test_interactive_call_relogs_in_and_retries_on_invalid_token():
     client = _client_for_interactive([
         FakeResponse(400, INVALID_TOKEN_BODY, ok=False),
+        FakeResponse(200, LOGIN_OK_BODY),  # the re-login call itself
+        FakeResponse(200, {"type": "success", "result": []}),
+    ])
+    net = client.get_login_net_quantity(12345)
+    assert net == 0
+    assert client.interactive_token == "NEW_TOKEN"
+
+
+def test_interactive_call_relogs_in_and_retries_on_e_token_0001():
+    """Same 2026-11-18 regression as above, but through the actual call
+    path that crashed live: get_login_net_quantity -> _interactive_call."""
+    client = _client_for_interactive([
+        FakeResponse(400, STALE_TOKEN_BODY_TOKEN0001, ok=False),
         FakeResponse(200, LOGIN_OK_BODY),  # the re-login call itself
         FakeResponse(200, {"type": "success", "result": []}),
     ])
