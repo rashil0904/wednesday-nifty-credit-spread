@@ -21,6 +21,8 @@ import position_store as ps
 from broker.order_exec import execute_order
 from broker.xts_client import NSE_FO_SEGMENT
 from poll_guard import PollGuard
+from results import build_pnl
+from results.trade_history import append_closed_trade
 from strategy.breakout import EntryTrigger
 from strategy.exit_rules import profit_target_hit, time_exit_due
 from strategy.stop_loss import should_stop_out
@@ -72,10 +74,18 @@ def check_and_exit_if_triggered(client, position: dict, log=print) -> str | None
                 f"sl_level={position['sl_level']} -- holding.")
 
     # --- profit target (every day the position is open, once legs are filled) ---
-    if position.get("legs_filled") and position.get("entry_credit"):
+    # Positions without a stop loss (call spreads) check it ONCE a day at
+    # TARGET_CHECK_TIME -- no quote calls (so no token re-logins) before then.
+    once_a_day_target = position.get("sl_level") is None
+    target_due = (not once_a_day_target) or (
+        now.time() >= config.TARGET_CHECK_TIME and position.get("target_checked_on") != today
+    )
+    if position.get("legs_filled") and position.get("entry_credit") and target_due:
         short_ltp = client.get_ltp(NSE_FO_SEGMENT, legs["SHORT_ATM"]["instrument_token"])
         hedge_ltp = client.get_ltp(NSE_FO_SEGMENT, legs["LONG_HEDGE"]["instrument_token"])
         current_value = short_ltp - hedge_ltp
+        if once_a_day_target:
+            ps.update_position(target_checked_on=today)
         if profit_target_hit(position["entry_credit"], current_value, config.PROFIT_TARGET_PCT):
             log(f"PROFIT_TARGET hit: current_value={current_value} entry_credit={position['entry_credit']}")
             return _try_exit(client, "PROFIT_TARGET", log)
@@ -228,6 +238,7 @@ def _close_position(client, position: dict, reason: str, log) -> None:
             )
             return
         closed.add(role)
+        ps.record_leg_exit(role, fill.filled, fill.avg_price)
         ps.update_position(closed_roles=sorted(closed))
         fill_notes.append(f"{role}: {side} {fill.filled} @ {fill.avg_price}")
         log(f"  closed {role}: {fill.filled} @ avg {fill.avg_price}")
@@ -240,3 +251,10 @@ def _close_position(client, position: dict, reason: str, log) -> None:
             f"\nEntry credit was {position.get('entry_credit', 0):.2f}.",
             log=log,
         )
+        if config.JAINAM_LIVE:
+            try:
+                final_position = ps.read_position()
+                append_closed_trade(final_position)
+                build_pnl.main()
+            except Exception as exc:  # noqa: BLE001 -- PnL bookkeeping, must never fail a real exit
+                log(f"    WARNING: PnL history/report sync failed ({exc}); trade closed fine regardless.")

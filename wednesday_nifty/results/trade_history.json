@@ -1,0 +1,101 @@
+[
+  {
+    "entry_date": "2026-11-04",
+    "trigger": "HIGH_BREAKOUT",
+    "option_type": "PE",
+    "expiry": "2026-11-09",
+    "legs": {
+      "SHORT_ATM": {
+        "role": "SHORT_ATM",
+        "option_type": "PE",
+        "strike": 23800.0,
+        "tradingsymbol": "NIFTY26N0923800PE",
+        "quantity": 260,
+        "avg_price": 200.24
+      },
+      "LONG_HEDGE": {
+        "role": "LONG_HEDGE",
+        "option_type": "PE",
+        "strike": 23600.0,
+        "tradingsymbol": "NIFTY26N0923600PE",
+        "quantity": 260,
+        "avg_price": 120.14
+      }
+    },
+    "exit_date": "2026-11-05",
+    "exit_reason": null,
+    "entry_credit": 80.1,
+    "gross_pnl": null,
+    "archived_at": "2026-11-25T11:13:22.814052+05:30"
+  },
+  {
+    "entry_date": "2026-11-11",
+    "trigger": "HIGH_BREAKOUT",
+    "option_type": "PE",
+    "expiry": "2026-11-17",
+    "legs": {
+      "SHORT_ATM": {
+        "role": "SHORT_ATM",
+        "option_type": "PE",
+        "strike": 25300.0,
+        "tradingsymbol": "NIFTY26N1725300PE",
+        "quantity": 260,
+        "avg_price": 228.32,
+        "exit_price": 27.1,
+        "exit_quantity": 260,
+        "exit_timestamp": "2026-11-17T10:00:00+05:30"
+      },
+      "LONG_HEDGE": {
+        "role": "LONG_HEDGE",
+        "option_type": "PE",
+        "strike": 25100.0,
+        "tradingsymbol": "NIFTY26N1725100PE",
+        "quantity": 260,
+        "avg_price": 143.45,
+        "exit_price": 4.25,
+        "exit_quantity": 260,
+        "exit_timestamp": "2026-11-17T10:00:00+05:30"
+      }
+    },
+    "exit_date": "2026-11-17",
+    "exit_reason": "MANUAL",
+    "entry_credit": 84.87,
+    "gross_pnl": 16125.2,
+    "archived_at": "2026-11-25T11:13:22.814930+05:30"
+  },
+  {
+    "entry_date": "2026-11-18",
+    "trigger": "TIME_1435_RED",
+    "option_type": "CE",
+    "expiry": "2026-11-23",
+    "legs": {
+      "SHORT_ATM": {
+        "role": "SHORT_ATM",
+        "option_type": "CE",
+        "strike": 25250.0,
+        "tradingsymbol": "NIFTY26NOV25250CE",
+        "quantity": 260,
+        "avg_price": 163.5,
+        "exit_price": 136.7,
+        "exit_quantity": 260,
+        "exit_timestamp": "2026-11-23T15:15:07+05:30"
+      },
+      "LONG_HEDGE": {
+        "role": "LONG_HEDGE",
+        "option_type": "CE",
+        "strike": 25450.0,
+        "tradingsymbol": "NIFTY26NOV25450CE",
+        "quantity": 260,
+        "avg_price": 84.4,
+        "exit_price": 4.5,
+        "exit_quantity": 260,
+        "exit_timestamp": "2026-11-23T15:15:07+05:30"
+      }
+    },
+    "exit_date": "2026-11-23",
+    "exit_reason": "TIME_EXIT",
+    "entry_credit": 79.1,
+    "gross_pnl": -13806.0,
+    "archived_at": "2026-11-25T11:13:22.816061+05:30"
+  }
+]

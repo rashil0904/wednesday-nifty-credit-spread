@@ -283,3 +283,95 @@ def test_sl_is_checked_again_at_1528_the_next_day(monkeypatch):
     at_time(monkeypatch, 15, 28, day=date(2026, 9, 18))
     client.ltps[FUTURES_TOKEN] = 25399.0
     assert exit_executor.check_and_exit_if_triggered(client, ps.read_position()) == "STOP_LOSS"
+
+
+# =============================================================================
+# Call spread (no SL): profit target checked once a day at TARGET_CHECK_TIME
+# =============================================================================
+
+def open_call_spread_position():
+    ps.write_position(date(2026, 9, 16), EntryTrigger.TIME_1435_RED, LEVELS, EXPIRY, FAR_FUTURE_EXIT_DATE,
+                       FUTURES_TOKEN, legs(), entry_credit=70.0)
+    ps.update_position(legs_filled=True)
+
+
+class ExplodingClient(FakeClient):
+    def get_ltp(self, segment, instrument_id):
+        raise AssertionError("no quote calls expected before the target check time")
+
+
+def test_call_spread_makes_no_quote_calls_before_target_check_time(monkeypatch):
+    at_time(monkeypatch, 11, 0)
+    open_call_spread_position()
+    assert exit_executor.check_and_exit_if_triggered(ExplodingClient(), ps.read_position()) is None
+
+
+def test_call_spread_target_checked_once_at_check_time(monkeypatch):
+    at_time(monkeypatch, 15, 28)
+    open_call_spread_position()
+    client = FakeClient()
+    client.ltps = {SHORT_TOKEN: 10.0, HEDGE_TOKEN: 3.0}  # 90% captured
+    assert exit_executor.check_and_exit_if_triggered(client, ps.read_position()) == "PROFIT_TARGET"
+
+
+def test_call_spread_target_not_rechecked_same_day(monkeypatch):
+    at_time(monkeypatch, 15, 28)
+    open_call_spread_position()
+    client = FakeClient()
+    client.ltps = {SHORT_TOKEN: 60.0, HEDGE_TOKEN: 3.0}  # target not hit
+    assert exit_executor.check_and_exit_if_triggered(client, ps.read_position()) is None
+    assert exit_executor.check_and_exit_if_triggered(ExplodingClient(), ps.read_position()) is None
+
+
+# =============================================================================
+# Live full close syncs results/trade_history.json + the PnL report
+# =============================================================================
+
+def test_live_full_close_syncs_pnl_history_and_report(monkeypatch, tmp_path):
+    from results import build_pnl
+    from results import trade_history as th
+
+    monkeypatch.setattr(config, "JAINAM_LIVE", True)
+    monkeypatch.setattr(th, "HISTORY_PATH", tmp_path / "trade_history.json")
+    build_pnl_calls = []
+    monkeypatch.setattr(build_pnl, "main", lambda: build_pnl_calls.append(1))
+
+    at_time(monkeypatch, 15, 28)
+    open_high_breakout_position()
+    client = FakeClient()
+    client.ltps = {FUTURES_TOKEN: 25399.0, SHORT_TOKEN: 150.0, HEDGE_TOKEN: 80.0}  # below sl_level=25400
+
+    reason = exit_executor.check_and_exit_if_triggered(client, ps.read_position())
+
+    assert reason == "STOP_LOSS"
+    assert ps.read_position()["status"] == "CLOSED"
+    assert build_pnl_calls == [1]
+
+    history = th.load_trade_history()
+    assert len(history) == 1
+    assert history[0]["exit_reason"] == "STOP_LOSS"
+    # FakeClient.get_order fills every leg at 100.0 regardless of side.
+    # Short sold 150, bought back 100 -> +50/unit. Hedge bought 80, sold 100 -> +20/unit.
+    assert history[0]["gross_pnl"] == (150.0 - 100.0) * 75 + (100.0 - 80.0) * 75
+
+
+def test_pnl_sync_failure_never_blocks_a_completed_exit(monkeypatch, tmp_path):
+    from results import build_pnl
+    from results import trade_history as th
+
+    monkeypatch.setattr(config, "JAINAM_LIVE", True)
+    monkeypatch.setattr(th, "HISTORY_PATH", tmp_path / "trade_history.json")
+
+    def _boom():
+        raise RuntimeError("Drive is down")
+    monkeypatch.setattr(build_pnl, "main", lambda: _boom())
+
+    at_time(monkeypatch, 15, 28)
+    open_high_breakout_position()
+    client = FakeClient()
+    client.ltps = {FUTURES_TOKEN: 25399.0, SHORT_TOKEN: 150.0, HEDGE_TOKEN: 80.0}
+
+    reason = exit_executor.check_and_exit_if_triggered(client, ps.read_position())
+
+    assert reason == "STOP_LOSS"
+    assert ps.read_position()["status"] == "CLOSED"  # the real exit still succeeded

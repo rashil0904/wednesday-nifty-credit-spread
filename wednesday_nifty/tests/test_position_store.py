@@ -172,3 +172,18 @@ def test_lock_held_by_a_live_process_still_blocks():
     with pytest.raises(ps.LockHeldError):
         with ps.acquire_entry_lock(date(2026, 9, 16)):
             pass
+
+
+# =============================================================================
+# record_leg_exit -- stamps exit fills for results/trade_history.py's P&L
+# =============================================================================
+
+def test_record_leg_exit_stamps_the_matching_leg_only():
+    ps.write_position(date(2026, 9, 16), EntryTrigger.HIGH_BREAKOUT, LEVELS, EXPIRY, EXIT_DATE, FUTURES_TOKEN, legs(), entry_credit=70.0)
+    ps.record_leg_exit("SHORT_ATM", 75, 140.0)
+    data = ps.read_position()
+    by_role = {leg["role"]: leg for leg in data["legs"]}
+    assert by_role["SHORT_ATM"]["exit_quantity"] == 75
+    assert by_role["SHORT_ATM"]["exit_price"] == 140.0
+    assert by_role["SHORT_ATM"]["exit_timestamp"]
+    assert "exit_price" not in by_role["LONG_HEDGE"]
