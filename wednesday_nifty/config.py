@@ -50,6 +50,14 @@ HIGH_BREAKOUT_SL_ENABLED = True
 # 2026-11-04). Applies on the entry day and every later day.
 SL_CHECK_TIME = time(15, 28)
 
+# Positions with NO stop loss (call spreads: LOW_BREAKOUT / TIME_1435_RED)
+# don't poll quotes all day: the profit target is checked ONCE a day at
+# this time (user rule, 2026-11-19, after e-session-0007 re-login churn
+# from all-day quote polling). Set to 15:28 not 15:30 because the poll
+# loop ends at MARKET_CLOSE (15:30) and orders can't fill at the bell.
+# The time exit is off the clock and needs no quotes.
+TARGET_CHECK_TIME = time(15, 28)
+
 # --- Sizing -------------------------------------------------------------------
 LOTS = 4  # fixed lots per trade, both legs (confirmed by user, 2026-11-01; previously 1); lot size itself comes from the instrument master
 
@@ -58,6 +66,7 @@ LOTS = 4  # fixed lots per trade, both legs (confirmed by user, 2026-11-01; prev
 NSE_HOLIDAYS: set[date] = {
     date(2026, 10, 2),  # Gandhi Jayanti
     date(2026, 11, 10),  # Holiday (confirmed by user, 2026-11-07)
+    date(2026, 11, 24),  # Holiday (confirmed by user, 2026-11-23)
 }
 
 # --- Order execution -----------------------------------------------------------
@@ -72,7 +81,16 @@ ROLLOVER_PROXIMITY_DAYS = 2
 # REST polling only -- the WebSocket feed was removed (not working,
 # to be revisited later). See git history for broker/market_stream.py
 # if it needs to come back.
-POLL_INTERVAL_SECONDS = 5
+# Raised from 5 to 15 on 2026-11-25: 5 other live processes on this box
+# (4 nifty-strangle-options strategies + this one) share ONE Jainam
+# market-data login, and every real token refresh kicks out whoever
+# else is holding the old one -- e-session-0007 "Invalid Token" noise
+# in run_entry.py/run_monitor_exit.py every 1-3 min. It always
+# self-heals within 1-2 retries (nothing was ever lost), but polling
+# less often lowers how often THIS process's own poll lands in that
+# window. 15s is still far finer than a 3-day-breakout/90%-target
+# strategy needs.
+POLL_INTERVAL_SECONDS = 15
 
 # --- Jainam (XTS) credentials --------------------------------------------------
 JAINAM_BASE_URL = os.environ.get("JAINAM_BASE_URL", "")
